@@ -112,7 +112,10 @@ async def deploy(file: UploadFile = File(...)):
             full_url = f"http://localhost:8080/{page_hash}"
         else:
             # Продакшн режим: контейнер запущен на сервере
-            full_url = f"https://{DOMAIN}/{page_hash}"
+            # Используем http:// если USE_HTTPS не установлен в 1
+            use_https = os.environ.get("USE_HTTPS", "0") == "1"
+            protocol = "https" if use_https else "http"
+            full_url = f"{protocol}://{DOMAIN}/{page_hash}"
         
         return DeployResponse(
             telegram_id=telegram_id,
