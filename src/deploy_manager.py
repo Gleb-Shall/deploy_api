@@ -414,8 +414,20 @@ class DeployManager:
         os.makedirs(deploy_config_dir, exist_ok=True)
         
         # Записываем location блок
-        with open(location_config_file, 'w') as f:
-            f.write(nginx_location)
+        logger.info(f"Writing nginx config to: {location_config_file}")
+        logger.info(f"Nginx location config:\n{nginx_location}")
+        try:
+            with open(location_config_file, 'w') as f:
+                f.write(nginx_location)
+            logger.info(f"Successfully wrote nginx config file: {location_config_file}")
+            # Проверяем что файл создан
+            if os.path.exists(location_config_file):
+                logger.info(f"Config file exists: {os.path.exists(location_config_file)}, size: {os.path.getsize(location_config_file)}")
+            else:
+                logger.error(f"Config file was not created: {location_config_file}")
+        except Exception as e:
+            logger.error(f"Failed to write nginx config: {e}", exc_info=True)
+            raise
         
         # Убеждаемся, что include директива есть в основном конфиге
         await self._ensure_include_in_main_config_direct(deploy_config_dir)
