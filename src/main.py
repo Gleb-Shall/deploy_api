@@ -4,6 +4,14 @@ import uvicorn
 from typing import Optional
 import json
 import os
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from src.models import DeployRequest, DeployResponse
 from src.parser import parse_json_request
@@ -48,22 +56,31 @@ async def deploy(file: UploadFile = File(...)):
         
         # Генерируем уникальный хэш для страницы
         page_hash = generate_hash(telegram_id, files)
+        logger.info(f"Generated page_hash: {page_hash}")
+        
+        # Логируем work_dir для отладки
+        logger.info(f"DockerManager work_dir: {docker_manager.work_dir}")
         
         # Создаем структуру проекта (локально)
         try:
+            logger.info(f"Creating container with page_hash: {page_hash}")
             image_name = await docker_manager.create_container(
                 page_hash=page_hash,
                 files=files,
                 telegram_id=telegram_id
             )
+            logger.info(f"Container created, image_name: {image_name}")
         except Exception as e:
+            logger.error(f"Error creating container: {str(e)}", exc_info=True)
             raise Exception(f"Ошибка при создании контейнера: {str(e)}")
         
         # Получаем путь к директории проекта
         container_dir = docker_manager.get_container_dir(page_hash)
+        logger.info(f"Container dir: {container_dir}")
         
         # Валидация: убеждаемся что container_dir правильный
         if not container_dir or container_dir == "containers":
+            logger.error(f"Invalid container_dir: '{container_dir}'")
             raise Exception(f"Неправильный путь container_dir: '{container_dir}'. Ожидается путь к поддиректории с хэшем.")
         
         # Деплоим контейнер (локально или на сервере, в зависимости от режима)
@@ -107,7 +124,20 @@ async def deploy(file: UploadFile = File(...)):
     except KeyError as e:
         raise HTTPException(status_code=400, detail=f"Missing required field: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Deployment failed: {str(e)}")
+        import traceback
+        # Логируем полный traceback для отладки
+        error_traceback = traceback.format_exc()
+        # Логируем через logging (будет видно в docker logs)
+        logger.error(f"Deployment failed: {str(e)}")
+        logger.error(f"Full traceback:\n{error_traceback}")
+        # Также выводим в stdout для гарантии
+        print(f"ERROR: {str(e)}", flush=True)
+        print(f"TRACEBACK:\n{error_traceback}", flush=True)
+        # Возвращаем пользователю более информативное сообщение
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Deployment failed: {str(e)}"
+        )
 
 
 @app.get("/health")
