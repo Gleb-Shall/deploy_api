@@ -98,6 +98,9 @@ class DeployManager:
         import subprocess
         import shutil
         
+        # Нормализуем путь (преобразуем относительные пути в абсолютные)
+        container_dir = os.path.abspath(container_dir)
+        
         # Проверяем доступность Docker daemon
         check_result = subprocess.run(
             ["docker", "info"],
@@ -124,6 +127,13 @@ class DeployManager:
             raise Exception(
                 f"Неправильный путь к контейнеру: {container_dir}. "
                 f"Ожидается путь заканчивающийся на '{page_hash}', но получен: {os.path.basename(container_dir)}"
+            )
+        
+        # Дополнительная проверка: убеждаемся, что это не просто "containers"
+        if container_dir.endswith("containers") and not container_dir.endswith(f"containers/{page_hash}"):
+            raise Exception(
+                f"Обнаружен путь к родительской директории 'containers': {container_dir}. "
+                f"Ожидается путь к поддиректории: .../containers/{page_hash}"
             )
         
         # Создаем целевую директорию на сервере (если нужно, удаляем старую)

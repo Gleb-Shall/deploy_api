@@ -74,15 +74,37 @@ class DockerManager:
         page_hash = None
         
         for file_data in files:
-            file_path = os.path.join(project_dir, file_data["name"])
+            file_name = file_data["name"]
+            
+            # Проверяем, что имя файла не пустое и не является директорией
+            if not file_name or file_name.strip() == "":
+                raise ValueError(f"Пустое имя файла в проекте")
+            
+            # Нормализуем путь (убираем ведущие / и ..)
+            file_name = file_name.lstrip('/')
+            if '..' in file_name:
+                raise ValueError(f"Небезопасный путь к файлу: {file_data['name']}")
+            
+            file_path = os.path.join(project_dir, file_name)
             file_dir = os.path.dirname(file_path)
             
+            # Проверяем, что путь не выходит за пределы project_dir
+            if not os.path.abspath(file_path).startswith(os.path.abspath(project_dir)):
+                raise ValueError(f"Путь к файлу выходит за пределы проекта: {file_name}")
+            
+            # Проверяем, что мы не пытаемся создать файл там, где уже есть директория
+            if os.path.exists(file_path) and os.path.isdir(file_path):
+                raise ValueError(
+                    f"Не удалось создать файл '{file_name}': по этому пути уже существует директория. "
+                    f"Полный путь: {file_path}"
+                )
+            
             # Проверяем наличие package.json
-            if file_data["name"] == "package.json":
+            if file_name == "package.json":
                 has_package_json = True
             
             # Если это astro.config.mjs, модифицируем его для правильной работы
-            if file_data["name"] == "astro.config.mjs":
+            if file_name == "astro.config.mjs":
                 content = prepare_file_content(file_data["content"])
                 # Извлекаем page_hash из директории проекта
                 page_hash = os.path.basename(project_dir)
@@ -98,8 +120,14 @@ class DockerManager:
                 os.makedirs(file_dir, exist_ok=True)
             
             # Записываем файл
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+            except (OSError, IOError) as e:
+                raise ValueError(
+                    f"Не удалось создать файл '{file_name}': {str(e)}. "
+                    f"Полный путь: {file_path}"
+                )
         
         if not has_package_json:
             raise ValueError("package.json is required in project files")

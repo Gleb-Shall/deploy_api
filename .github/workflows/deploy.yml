@@ -100,6 +100,8 @@ jobs:
             fi
             
             # Запускаем новый контейнер
+            # ROOT_PATH не устанавливается по умолчанию (подходит для поддомена api.automatorio.ru)
+            # Если используете automatorio.ru/api/, добавьте: -e ROOT_PATH=/api \
             docker run -d \
               --name deploy-api \
               --restart unless-stopped \
