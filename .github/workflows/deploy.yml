@@ -83,6 +83,48 @@ jobs:
             mkdir -p /root/deploy_api/containers
             mkdir -p /etc/nginx/sites-available/deploy
             
+            # Настраиваем автоматическую перезагрузку Nginx (если еще не настроена)
+            if [ ! -f /etc/systemd/system/nginx-reload.path ]; then
+              echo "Setting up automatic nginx reload..."
+              
+              # Создаем systemd service unit для перезагрузки Nginx
+              cat > /etc/systemd/system/nginx-reload.service << 'NGXSRV'
+[Unit]
+Description=Reload nginx when deploy configs change
+After=nginx.service
+Requires=nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl reload nginx
+User=root
+NGXSRV
+              
+              # Создаем systemd path unit для отслеживания изменений
+              cat > /etc/systemd/system/nginx-reload.path << 'NGXPATH'
+[Unit]
+Description=Watch for nginx deploy config changes
+Documentation=man:systemd.path(5)
+
+[Path]
+PathChanged=/etc/nginx/sites-available/deploy/
+PathModified=/etc/nginx/sites-available/deploy/
+Unit=nginx-reload.service
+
+[Install]
+WantedBy=multi-user.target
+NGXPATH
+              
+              # Перезагружаем systemd и включаем path unit
+              systemctl daemon-reload
+              systemctl enable nginx-reload.path
+              systemctl start nginx-reload.path
+              
+              echo "Automatic nginx reload configured successfully"
+            else
+              echo "Automatic nginx reload already configured"
+            fi
+            
             # Убеждаемся что include директива есть в основном конфиге (добавьте вручную если отсутствует)
             MAIN_CONFIG="/etc/nginx/sites-available/automatoria.ru"
             if [ -f "$MAIN_CONFIG" ] && ! grep -q "include /etc/nginx/sites-available/deploy/\*\.conf;" "$MAIN_CONFIG"; then
