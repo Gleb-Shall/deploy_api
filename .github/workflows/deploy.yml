@@ -113,6 +113,7 @@ jobs:
             docker run -d \
               --name deploy-api \
               --restart unless-stopped \
+              --pid=host \
               -p 8000:8000 \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v /root/deploy_api/containers:/app/containers \

@@ -458,33 +458,112 @@ class DeployManager:
         else:
             logger.warning("nginx command not found, skipping config test")
         
-        # Перезагружаем nginx (через systemctl, если доступен)
-        systemctl_result = subprocess.run(
-            ["which", "systemctl"],
-            capture_output=True,
-            timeout=2
-        )
-        if systemctl_result.returncode == 0:
-            reload_result = subprocess.run(
-                ["systemctl", "reload", "nginx"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if reload_result.returncode != 0:
-                logger.warning(f"Failed to reload nginx via systemctl: {reload_result.stderr}")
-                # Пробуем альтернативный способ - через nginx -s reload
-                if nginx_cmd:
-                    reload_result2 = subprocess.run(
+        # Перезагружаем nginx (используем docker exec для выполнения команды на хосте)
+        reload_success = False
+        
+        # Пробуем перезагрузить Nginx через Docker exec на хосте
+        # Если мы внутри контейнера API, нужно выполнить команду на хосте
+        try:
+            # Вариант 1: Через docker exec в основной процесс (если Nginx в контейнере)
+            # Или используем host.docker.internal если доступен
+            # Но проще - использовать прямой доступ к хосту через PID namespace
+            
+            # Проверяем PID файл Nginx на хосте (монтированный /etc/nginx может содержать /var/run/)
+            nginx_pid_file_paths = [
+                "/var/run/nginx.pid",
+                "/run/nginx.pid", 
+                "/var/run/nginx/nginx.pid"
+            ]
+            
+            nginx_pid = None
+            for pid_path in nginx_pid_file_paths:
+                if os.path.exists(pid_path):
+                    try:
+                        with open(pid_path, 'r') as f:
+                            nginx_pid = f.read().strip()
+                        if nginx_pid and nginx_pid.isdigit():
+                            break
+                    except:
+                        continue
+            
+            # Если нашли PID, пробуем отправить сигнал HUP (работает если контейнер запущен с --pid=host)
+            if nginx_pid:
+                try:
+                    reload_result = subprocess.run(
+                        ["kill", "-HUP", nginx_pid],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if reload_result.returncode == 0:
+                        logger.info(f"Successfully reloaded nginx via HUP signal (PID: {nginx_pid})")
+                        reload_success = True
+                except Exception as e:
+                    logger.debug(f"Could not send HUP signal: {e}")
+            
+            # Вариант 2: Через docker exec (если есть доступ к Docker socket)
+            if not reload_success:
+                try:
+                    # Используем docker exec для выполнения команды в контейнере на хосте
+                    # Или напрямую через nsenter, но проще использовать systemctl через docker exec
+                    docker_result = subprocess.run(
+                        ["docker", "exec", "nginx", "systemctl", "reload", "nginx"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if docker_result.returncode == 0:
+                        logger.info("Successfully reloaded nginx via docker exec")
+                        reload_success = True
+                except Exception as e:
+                    logger.debug(f"Could not reload via docker exec: {e}")
+            
+            # Вариант 3: Прямой вызов systemctl (может работать если контейнер имеет доступ к systemd)
+            if not reload_success:
+                try:
+                    systemctl_result = subprocess.run(
+                        ["which", "systemctl"],
+                        capture_output=True,
+                        timeout=2
+                    )
+                    if systemctl_result.returncode == 0:
+                        reload_result = subprocess.run(
+                            ["systemctl", "reload", "nginx"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if reload_result.returncode == 0:
+                            logger.info("Successfully reloaded nginx via systemctl")
+                            reload_success = True
+                        else:
+                            logger.debug(f"systemctl reload failed: {reload_result.stderr}")
+                except Exception as e:
+                    logger.debug(f"Could not use systemctl: {e}")
+            
+            # Вариант 4: Через nginx -s reload
+            if not reload_success and nginx_cmd:
+                try:
+                    reload_result = subprocess.run(
                         [nginx_cmd, "-s", "reload"],
                         capture_output=True,
                         text=True,
                         timeout=10
                     )
-                    if reload_result2.returncode != 0:
-                        logger.warning(f"Failed to reload nginx via nginx -s reload: {reload_result2.stderr}")
-        else:
-            logger.warning("systemctl not found, nginx reload should be done manually")
+                    if reload_result.returncode == 0:
+                        logger.info("Successfully reloaded nginx via nginx -s reload")
+                        reload_success = True
+                    else:
+                        logger.debug(f"nginx -s reload failed: {reload_result.stderr}")
+                except Exception as e:
+                    logger.debug(f"Could not use nginx -s reload: {e}")
+            
+        except Exception as e:
+            logger.warning(f"Error during nginx reload attempt: {e}")
+        
+        if not reload_success:
+            logger.warning("Could not automatically reload nginx. Config is saved but nginx needs manual reload: systemctl reload nginx")
+            logger.info("You may need to reload nginx manually after deploy: systemctl reload nginx")
         
         # Сохраняем в реестр
         await self._save_container_registry_direct(page_hash, container_port, container_name=f"deploy-{page_hash}")

@@ -51,6 +51,21 @@ location /{page_hash}/ {{
     rewrite ^/{page_hash}(/.*)$ $1 break;
 }}
 
+# Location для статических файлов Astro (/_astro/, /assets/ и т.д.)
+# Эти файлы запрашиваются без префикса /{page_hash}, поэтому проксируем напрямую
+location ~ ^/(_astro|assets|node_modules|public)/ {{
+    proxy_pass http://127.0.0.1:{container_port}$request_uri;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # Кеширование статических файлов
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+}}
+
 # Редирект с /{page_hash} на /{page_hash}/
 location = /{page_hash} {{
     return 301 /{page_hash}/;
