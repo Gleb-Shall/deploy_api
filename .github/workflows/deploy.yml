@@ -108,6 +108,7 @@ jobs:
               -p 8000:8000 \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v /root/deploy_api/containers:/app/containers \
+              -v /etc/nginx:/etc/nginx \
               -e DOMAIN=${{ secrets.DOMAIN }} \
               -e SSH_HOST=${{ secrets.SSH_HOST }} \
               -e SSH_USER=${{ secrets.SSH_USER }} \
