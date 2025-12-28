@@ -2,13 +2,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости и Docker CLI
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     make \
     curl \
     openssh-client \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements и устанавливаем зависимости
