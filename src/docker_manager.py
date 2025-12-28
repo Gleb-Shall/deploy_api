@@ -39,8 +39,19 @@ class DockerManager:
         Returns:
             ID контейнера или путь к образу
         """
+        # Валидация входных данных
+        if not page_hash:
+            raise ValueError("page_hash не может быть пустым")
+        if not self.work_dir or self.work_dir == "containers":
+            raise ValueError(f"Неправильный work_dir: '{self.work_dir}'. Убедитесь, что DockerManager инициализирован корректно.")
+        
         # Создаем временную директорию для проекта
         project_dir = os.path.join(self.work_dir, page_hash)
+        
+        # Валидация: убеждаемся что project_dir правильный
+        if not project_dir or project_dir == self.work_dir or project_dir == "containers":
+            raise ValueError(f"Неправильный project_dir: '{project_dir}'. work_dir: '{self.work_dir}', page_hash: '{page_hash}'")
+        
         os.makedirs(project_dir, exist_ok=True)
         
         try:
@@ -69,6 +80,10 @@ class DockerManager:
     async def _save_files(self, project_dir: str, files: List[Dict[str, Any]]):
         """Сохраняет файлы проекта в директорию"""
         from src.utils import prepare_file_content
+        
+        # Валидация project_dir
+        if not project_dir or project_dir == "containers":
+            raise ValueError(f"Неправильный project_dir: '{project_dir}'. Ожидается путь к поддиректории проекта.")
         
         has_package_json = False
         page_hash = None

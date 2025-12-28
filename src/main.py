@@ -50,14 +50,21 @@ async def deploy(file: UploadFile = File(...)):
         page_hash = generate_hash(telegram_id, files)
         
         # Создаем структуру проекта (локально)
-        image_name = await docker_manager.create_container(
-            page_hash=page_hash,
-            files=files,
-            telegram_id=telegram_id
-        )
+        try:
+            image_name = await docker_manager.create_container(
+                page_hash=page_hash,
+                files=files,
+                telegram_id=telegram_id
+            )
+        except Exception as e:
+            raise Exception(f"Ошибка при создании контейнера: {str(e)}")
         
         # Получаем путь к директории проекта
         container_dir = docker_manager.get_container_dir(page_hash)
+        
+        # Валидация: убеждаемся что container_dir правильный
+        if not container_dir or container_dir == "containers":
+            raise Exception(f"Неправильный путь container_dir: '{container_dir}'. Ожидается путь к поддиректории с хэшем.")
         
         # Деплоим контейнер (локально или на сервере, в зависимости от режима)
         # Контейнер будет иметь имя deploy-{page_hash} и уникальный порт
