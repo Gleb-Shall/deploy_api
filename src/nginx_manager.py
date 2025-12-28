@@ -32,7 +32,7 @@ class NginxManager:
         
         location_config = f"""# Location для /{page_hash}
 location /{page_hash}/ {{
-    proxy_pass http://localhost:{container_port}/;
+    proxy_pass http://127.0.0.1:{container_port}/;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection 'upgrade';
