@@ -446,9 +446,14 @@ class DeployManager:
         """Убеждается, что include есть в основном конфиге (без SSH)"""
         import subprocess
         import re
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"_ensure_include_in_main_config_direct called with deploy_config_dir: {deploy_config_dir}")
         
         # Ищем конфиг с доменом (используем переменную окружения DOMAIN или ищем любой активный конфиг)
         domain = os.environ.get("DOMAIN", "")
+        logger.info(f"Looking for nginx config with domain: {domain}")
         if domain:
             # Ищем конфиг с указанным доменом
             result = subprocess.run(
@@ -468,20 +473,25 @@ class DeployManager:
             )
         
         config_path = None
+        logger.info(f"First search result returncode: {result.returncode}, stdout: {result.stdout[:200]}")
         if result.returncode == 0 and result.stdout.strip():
             # Если нашли по домену, берем путь из вывода grep
             if domain:
-                config_path = result.stdout.strip().split(':')[0]
+                output = result.stdout.strip()
+                if ':' in output:
+                    config_path = output.split(':')[0]
+                else:
+                    config_path = output.split('\n')[0]
             else:
                 # Если искали по sites-enabled, конвертируем путь
                 enabled_path = result.stdout.strip().split('\n')[0]
                 config_path = enabled_path.replace('/sites-enabled/', '/sites-available/')
+        logger.info(f"After first search, config_path: {config_path}")
         
         # Если не нашли, пробуем найти любой активный конфиг
         if not config_path:
             result = subprocess.run(
-                ["ls", "/etc/nginx/sites-enabled/*.conf"],
-                shell=True,
+                ["find", "/etc/nginx/sites-enabled", "-name", "*.conf", "-type", "f"],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -490,13 +500,39 @@ class DeployManager:
                 enabled_path = result.stdout.strip().split('\n')[0]
                 config_path = enabled_path.replace('/sites-enabled/', '/sites-available/')
         
-        if not config_path or not os.path.exists(config_path):
-            print("Warning: Could not find main nginx config, include directive should be added manually")
+        # Валидация config_path
+        logger.info(f"Final config_path before validation: {config_path}")
+        if not config_path:
+            logger.warning("Could not find main nginx config, include directive should be added manually")
+            return
+        
+        # Проверяем, что config_path - это файл, а не директория или что-то странное
+        if not os.path.isabs(config_path):
+            # Если путь относительный и равен 'containers' - это ошибка
+            if config_path == 'containers':
+                logger.error(f"ERROR: config_path is incorrectly set to 'containers'. This is likely a bug in path parsing.")
+                logger.error(f"Deploy config dir: {deploy_config_dir}")
+                logger.error(f"Domain: {domain}")
+                logger.error(f"First search stdout: {result.stdout if 'result' in locals() else 'N/A'}")
+                return
+            logger.warning(f"config_path is not absolute: {config_path}")
+            return
+        
+        if not os.path.exists(config_path):
+            print(f"Warning: nginx config not found: {config_path}")
+            return
+        
+        if not os.path.isfile(config_path):
+            print(f"Warning: config_path is not a file: {config_path} (is directory: {os.path.isdir(config_path)})")
             return
         
         # Читаем конфиг
-        with open(config_path, 'r') as f:
-            content = f.read()
+        try:
+            with open(config_path, 'r') as f:
+                content = f.read()
+        except (OSError, IOError) as e:
+            print(f"Error reading nginx config {config_path}: {e}")
+            return
         
         include_line = f"    include {deploy_config_dir}/*.conf;"
         
