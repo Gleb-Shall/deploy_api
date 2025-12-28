@@ -110,6 +110,7 @@ jobs:
             # Запускаем новый контейнер
             # ROOT_PATH не устанавливается по умолчанию (подходит для поддомена api.automatoria.ru)
             # Если используете automatoria.ru/api/, добавьте: -e ROOT_PATH=/api \
+            # --pid=host позволяет контейнеру посылать сигналы процессам на хосте (для перезагрузки Nginx)
             docker run -d \
               --name deploy-api \
               --restart unless-stopped \
@@ -123,7 +124,22 @@ jobs:
               -e SSH_USER=${{ secrets.SSH_USER }} \
               -e RUN_ON_SERVER=1 \
               -e USE_HTTPS=1 \
-              ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
+              ${IMAGE_NAME_LOWER}:${IMAGE_TAG} || {
+                echo "Warning: Failed to start with --pid=host, trying without it..."
+                docker run -d \
+                  --name deploy-api \
+                  --restart unless-stopped \
+                  -p 8000:8000 \
+                  -v /var/run/docker.sock:/var/run/docker.sock \
+                  -v /root/deploy_api/containers:/app/containers \
+                  -v /etc/nginx:/etc/nginx \
+                  -e DOMAIN=${{ secrets.DOMAIN }} \
+                  -e SSH_HOST=${{ secrets.SSH_HOST }} \
+                  -e SSH_USER=${{ secrets.SSH_USER }} \
+                  -e RUN_ON_SERVER=1 \
+                  -e USE_HTTPS=1 \
+                  ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
+              }
             
             # Очищаем старые образы
             docker image prune -f
