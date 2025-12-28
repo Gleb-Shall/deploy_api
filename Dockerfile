@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Устанавливаем системные зависимости и Docker CLI
+# Устанавливаем системные зависимости, Docker CLI и nginx (для проверки конфигов)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     openssh-client \
     docker.io \
+    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements и устанавливаем зависимости
