@@ -19,8 +19,12 @@ class DockerManager:
             current_dir = Path(__file__).parent
             project_root = current_dir.parent
             work_dir = str(project_root / "containers")
-        self.work_dir = work_dir
-        os.makedirs(work_dir, exist_ok=True)
+        # Нормализуем путь (преобразуем в абсолютный)
+        self.work_dir = os.path.abspath(work_dir)
+        # Убеждаемся, что это директория, а не файл
+        if os.path.exists(self.work_dir) and not os.path.isdir(self.work_dir):
+            raise ValueError(f"work_dir существует, но это не директория: {self.work_dir}")
+        os.makedirs(self.work_dir, exist_ok=True)
     
     async def create_container(
         self,
@@ -52,17 +56,47 @@ class DockerManager:
         if not project_dir or project_dir == self.work_dir or project_dir == "containers":
             raise ValueError(f"Неправильный project_dir: '{project_dir}'. work_dir: '{self.work_dir}', page_hash: '{page_hash}'")
         
-        os.makedirs(project_dir, exist_ok=True)
+        # Проверяем, что work_dir не содержит конфликтующих файлов
+        if os.path.exists(self.work_dir):
+            # Проверяем, что work_dir - это действительно директория
+            if not os.path.isdir(self.work_dir):
+                raise ValueError(f"work_dir существует, но это не директория: {self.work_dir}")
+            # Проверяем, что внутри нет файла с именем, совпадающим с page_hash (это было бы странно, но проверим)
+            conflict_path = os.path.join(self.work_dir, page_hash)
+            if os.path.exists(conflict_path) and not os.path.isdir(conflict_path):
+                # Если есть файл с таким именем вместо директории - это проблема, удаляем его
+                os.remove(conflict_path)
+        
+        # Создаем директорию проекта (если уже существует - переиспользуем для оптимизации)
+        # Это позволяет не пересобирать контейнер, если пользователь отправляет тот же файл
+        if os.path.exists(project_dir):
+            if not os.path.isdir(project_dir):
+                # Если это файл, а не директория - удаляем и создаем директорию
+                os.remove(project_dir)
+                os.makedirs(project_dir, exist_ok=True)
+            # Если директория уже существует - просто используем её (оптимизация для одинаковых хэшей)
+        else:
+            # Директория не существует - создаем новую
+            os.makedirs(project_dir, exist_ok=True)
         
         try:
             # Сохраняем все файлы проекта
-            await self._save_files(project_dir, files)
+            try:
+                await self._save_files(project_dir, files)
+            except Exception as e:
+                raise Exception(f"Ошибка при сохранении файлов: {str(e)}")
             
             # Создаем Dockerfile
-            await self._create_dockerfile(project_dir)
+            try:
+                await self._create_dockerfile(project_dir)
+            except Exception as e:
+                raise Exception(f"Ошибка при создании Dockerfile: {str(e)}")
             
             # Создаем .dockerignore
-            await self._create_dockerignore(project_dir)
+            try:
+                await self._create_dockerignore(project_dir)
+            except Exception as e:
+                raise Exception(f"Ошибка при создании .dockerignore: {str(e)}")
             
             # Собираем Docker образ (имя образа использует хэш для уникальности)
             image_name = f"deploy-{page_hash}"
@@ -74,7 +108,10 @@ class DockerManager:
         except Exception as e:
             # Очистка в случае ошибки
             if os.path.exists(project_dir):
-                shutil.rmtree(project_dir)
+                try:
+                    shutil.rmtree(project_dir)
+                except:
+                    pass
             raise Exception(f"Failed to create container: {str(e)}")
     
     async def _save_files(self, project_dir: str, files: List[Dict[str, Any]]):
@@ -210,8 +247,14 @@ CMD ["nginx", "-g", "daemon off;"]
 """
         
         dockerfile_path = os.path.join(project_dir, "Dockerfile")
-        with open(dockerfile_path, 'w', encoding='utf-8') as f:
-            f.write(dockerfile_content)
+        # Дополнительная проверка: убеждаемся что project_dir - это директория
+        if not os.path.isdir(project_dir):
+            raise ValueError(f"project_dir не является директорией: {project_dir}")
+        try:
+            with open(dockerfile_path, 'w', encoding='utf-8') as f:
+                f.write(dockerfile_content)
+        except (OSError, IOError) as e:
+            raise ValueError(f"Не удалось создать Dockerfile в {dockerfile_path}: {str(e)}")
     
     async def _create_dockerignore(self, project_dir: str):
         """Создает .dockerignore файл"""
@@ -226,8 +269,11 @@ npm-debug.log
 """
         
         dockerignore_path = os.path.join(project_dir, ".dockerignore")
-        with open(dockerignore_path, 'w', encoding='utf-8') as f:
-            f.write(dockerignore_content)
+        try:
+            with open(dockerignore_path, 'w', encoding='utf-8') as f:
+                f.write(dockerignore_content)
+        except (OSError, IOError) as e:
+            raise ValueError(f"Не удалось создать .dockerignore в {dockerignore_path}: {str(e)}")
     
     async def _build_image(self, project_dir: str, image_name: str):
         """
