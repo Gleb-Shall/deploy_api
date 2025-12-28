@@ -81,6 +81,14 @@ jobs:
             
             # Создаем необходимые директории
             mkdir -p /root/deploy_api/containers
+            mkdir -p /etc/nginx/sites-available/deploy
+            
+            # Убеждаемся что include директива есть в основном конфиге (добавьте вручную если отсутствует)
+            MAIN_CONFIG="/etc/nginx/sites-available/automatoria.ru"
+            if [ -f "$MAIN_CONFIG" ] && ! grep -q "include /etc/nginx/sites-available/deploy/\*\.conf;" "$MAIN_CONFIG"; then
+              echo "Warning: include directive not found in $MAIN_CONFIG. Please add it manually:"
+              echo "  include /etc/nginx/sites-available/deploy/*.conf;"
+            fi
             
             # Останавливаем старый контейнер если существует
             docker stop deploy-api 2>/dev/null || true
@@ -118,4 +126,9 @@ jobs:
             
             # Очищаем старые образы
             docker image prune -f
+            
+            # Проверяем конфигурацию Nginx и перезагружаем (если доступен)
+            if command -v nginx >/dev/null 2>&1; then
+              nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
+            fi
 
