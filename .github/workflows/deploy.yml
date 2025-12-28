@@ -112,6 +112,7 @@ jobs:
               -e SSH_HOST=${{ secrets.SSH_HOST }} \
               -e SSH_USER=${{ secrets.SSH_USER }} \
               -e RUN_ON_SERVER=1 \
+              -e USE_HTTPS=1 \
               ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
             
             # Очищаем старые образы
