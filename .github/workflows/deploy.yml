@@ -32,11 +32,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set lowercase image name
+        id: image_name
+        run: |
+          IMAGE_NAME_LOWER=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_NAME_LOWER=${IMAGE_NAME_LOWER}" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image_name.outputs.IMAGE_NAME_LOWER }}
           tags: |
             type=ref,event=branch
             type=sha,prefix={{branch}}-
@@ -70,6 +76,9 @@ jobs:
           script: |
             set -e
             
+            # Преобразуем имя образа в lowercase с полным путем
+            IMAGE_NAME_LOWER="${{ env.REGISTRY }}/$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')"
+            
             # Создаем необходимые директории
             mkdir -p /root/deploy_api/containers
             
@@ -81,13 +90,13 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
             # Скачиваем новый образ
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest || true
+            docker pull ${IMAGE_NAME_LOWER}:latest || true
             
             # Если образ не скачался, используем latest тег из основного ветки
             IMAGE_TAG="latest"
-            if ! docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest 2>/dev/null; then
+            if ! docker pull ${IMAGE_NAME_LOWER}:latest 2>/dev/null; then
               IMAGE_TAG="${{ github.ref_name }}-${{ github.sha }}"
-              docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} || true
+              docker pull ${IMAGE_NAME_LOWER}:${IMAGE_TAG} || true
             fi
             
             # Запускаем новый контейнер
@@ -101,7 +110,7 @@ jobs:
               -e SSH_HOST=${{ secrets.SSH_HOST }} \
               -e SSH_USER=${{ secrets.SSH_USER }} \
               -e RUN_ON_SERVER=1 \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+              ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
             
             # Очищаем старые образы
             docker image prune -f
