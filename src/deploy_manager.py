@@ -113,14 +113,39 @@ class DeployManager:
         remote_project_dir = f"/opt/deploy/{page_hash}"
         container_name = f"deploy-{page_hash}"
         
-        # Создаем директорию на сервере
-        os.makedirs(remote_project_dir, exist_ok=True)
+        # Проверяем, что container_dir существует и это директория
+        if not os.path.exists(container_dir):
+            raise Exception(f"Исходная директория не найдена: {container_dir}. Убедитесь, что проект был создан корректно.")
+        if not os.path.isdir(container_dir):
+            raise Exception(f"Исходный путь не является директорией: {container_dir}. Ожидается директория проекта.")
+        
+        # Проверяем, что это не родительская директория containers
+        if os.path.basename(container_dir) != page_hash:
+            raise Exception(
+                f"Неправильный путь к контейнеру: {container_dir}. "
+                f"Ожидается путь заканчивающийся на '{page_hash}', но получен: {os.path.basename(container_dir)}"
+            )
+        
+        # Создаем целевую директорию на сервере (если нужно, удаляем старую)
+        if os.path.exists(remote_project_dir):
+            if os.path.isdir(remote_project_dir):
+                shutil.rmtree(remote_project_dir)
+            else:
+                # Если это файл, а не директория, удаляем его
+                os.remove(remote_project_dir)
         
         # Копируем проект в целевую директорию
         if os.path.abspath(container_dir) != os.path.abspath(remote_project_dir):
-            if os.path.exists(remote_project_dir):
-                shutil.rmtree(remote_project_dir)
-            shutil.copytree(container_dir, remote_project_dir)
+            try:
+                shutil.copytree(container_dir, remote_project_dir)
+            except OSError as e:
+                raise Exception(
+                    f"Не удалось скопировать директорию из {container_dir} в {remote_project_dir}: {str(e)}. "
+                    f"Убедитесь, что исходная директория существует и содержит файлы проекта."
+                )
+        else:
+            # Если пути совпадают, просто убеждаемся что директория существует
+            os.makedirs(remote_project_dir, exist_ok=True)
         
         # Собираем Docker образ на сервере
         build_result = subprocess.run(
