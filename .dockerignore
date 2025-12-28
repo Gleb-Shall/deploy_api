@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker и контейнеры (не копируем временные данные)
+containers/
+*.log
+
+# Секретные файлы
+example.json
+.env
+.env.local
+*.pem
+*.key
+keys_for_servers/
+ssh_keys/
+
+# Git
+.git/
+.gitignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Документация и скрипты (не нужны в контейнере)
+задание.md
+scripts/
+
+# GitHub
+.github/
+

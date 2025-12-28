@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  deploy-api:
+    build: .
+    container_name: deploy-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DOMAIN=${DOMAIN:-your-domain.com}
+      - SSH_HOST=${SSH_HOST:-your-server-ip}
+      - SSH_USER=${SSH_USER:-root}
+      # SSH_KEY_PATH не нужен на сервере - API работает напрямую через Docker socket
+      - RUN_ON_SERVER=1
+    volumes:
+      # Монтируем Docker socket для возможности создавать контейнеры
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Монтируем папку для временных контейнеров
+      - ./containers:/app/containers
+    restart: unless-stopped
+    networks:
+      - deploy-network
+
+networks:
+  deploy-network:
+    driver: bridge
+

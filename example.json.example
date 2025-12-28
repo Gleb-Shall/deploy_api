@@ -1,0 +1,38 @@
+{
+  "files": [
+    {
+      "telegram id": "YOUR_TELEGRAM_ID"
+    },
+    {
+      "name": "package.json",
+      "content": {
+        "name": "example-website",
+        "type": "module",
+        "version": "1.0.0",
+        "scripts": {
+          "dev": "astro dev --port 8000",
+          "start": "astro dev --port 8000",
+          "build": "astro build",
+          "preview": "astro preview --port 8000",
+          "astro": "astro"
+        },
+        "dependencies": {
+          "astro": "^4.0.0"
+        },
+        "devDependencies": {
+          "@astrojs/check": "^0.9.0",
+          "typescript": "^5.3.0"
+        }
+      }
+    },
+    {
+      "name": "astro.config.mjs",
+      "content": "import { defineConfig } from 'astro/config';\n\nexport default defineConfig({\n  server: {\n    port: 8000,\n    host: true\n  },\n  vite: {\n    server: {\n      port: 8000,\n      host: true\n    }\n  }\n});\n"
+    },
+    {
+      "name": "src/pages/index.astro",
+      "content": "---\n---\n\n<html>\n  <head>\n    <title>Example Site</title>\n  </head>\n  <body>\n    <h1>Hello World</h1>\n  </body>\n</html>\n"
+    }
+  ]
+}
+
