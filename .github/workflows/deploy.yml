@@ -75,119 +75,54 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
-            
-            # Преобразуем имя образа в lowercase с полным путем
             IMAGE_NAME_LOWER="${{ env.REGISTRY }}/$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')"
-            
-            # Создаем необходимые директории
             mkdir -p /root/deploy_api/containers
             mkdir -p /etc/nginx/sites-available/deploy
-            
-            # Настраиваем автоматическую перезагрузку Nginx (если еще не настроена)
             if [ ! -f /etc/systemd/system/nginx-reload.path ]; then
               echo "Setting up automatic nginx reload..."
-              
-              # Создаем systemd service unit для перезагрузки Nginx
-              cat > /etc/systemd/system/nginx-reload.service << 'NGXSRV'
-[Unit]
-Description=Reload nginx when deploy configs change
-After=nginx.service
-Requires=nginx.service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/systemctl reload nginx
-User=root
-NGXSRV
-              
-              # Создаем systemd path unit для отслеживания изменений
-              cat > /etc/systemd/system/nginx-reload.path << 'NGXPATH'
-[Unit]
-Description=Watch for nginx deploy config changes
-Documentation=man:systemd.path(5)
-
-[Path]
-PathChanged=/etc/nginx/sites-available/deploy/
-PathModified=/etc/nginx/sites-available/deploy/
-Unit=nginx-reload.service
-
-[Install]
-WantedBy=multi-user.target
-NGXPATH
-              
-              # Перезагружаем systemd и включаем path unit
+              echo "[Unit]" > /etc/systemd/system/nginx-reload.service
+              echo "Description=Reload nginx when deploy configs change" >> /etc/systemd/system/nginx-reload.service
+              echo "After=nginx.service" >> /etc/systemd/system/nginx-reload.service
+              echo "Requires=nginx.service" >> /etc/systemd/system/nginx-reload.service
+              echo "" >> /etc/systemd/system/nginx-reload.service
+              echo "[Service]" >> /etc/systemd/system/nginx-reload.service
+              echo "Type=oneshot" >> /etc/systemd/system/nginx-reload.service
+              echo "ExecStart=/bin/systemctl reload nginx" >> /etc/systemd/system/nginx-reload.service
+              echo "User=root" >> /etc/systemd/system/nginx-reload.service
+              echo "[Unit]" > /etc/systemd/system/nginx-reload.path
+              echo "Description=Watch for nginx deploy config changes" >> /etc/systemd/system/nginx-reload.path
+              echo "Documentation=man:systemd.path(5)" >> /etc/systemd/system/nginx-reload.path
+              echo "" >> /etc/systemd/system/nginx-reload.path
+              echo "[Path]" >> /etc/systemd/system/nginx-reload.path
+              echo "PathChanged=/etc/nginx/sites-available/deploy/" >> /etc/systemd/system/nginx-reload.path
+              echo "PathModified=/etc/nginx/sites-available/deploy/" >> /etc/systemd/system/nginx-reload.path
+              echo "Unit=nginx-reload.service" >> /etc/systemd/system/nginx-reload.path
+              echo "" >> /etc/systemd/system/nginx-reload.path
+              echo "[Install]" >> /etc/systemd/system/nginx-reload.path
+              echo "WantedBy=multi-user.target" >> /etc/systemd/system/nginx-reload.path
               systemctl daemon-reload
               systemctl enable nginx-reload.path
               systemctl start nginx-reload.path
-              
               echo "Automatic nginx reload configured successfully"
             else
               echo "Automatic nginx reload already configured"
             fi
-            
-            # Убеждаемся что include директива есть в основном конфиге (добавьте вручную если отсутствует)
             MAIN_CONFIG="/etc/nginx/sites-available/automatoria.ru"
             if [ -f "$MAIN_CONFIG" ] && ! grep -q "include /etc/nginx/sites-available/deploy/\*\.conf;" "$MAIN_CONFIG"; then
               echo "Warning: include directive not found in $MAIN_CONFIG. Please add it manually:"
               echo "  include /etc/nginx/sites-available/deploy/*.conf;"
             fi
-            
-            # Останавливаем старый контейнер если существует
             docker stop deploy-api 2>/dev/null || true
             docker rm deploy-api 2>/dev/null || true
-            
-            # Логинимся в GitHub Container Registry
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            
-            # Скачиваем новый образ
             docker pull ${IMAGE_NAME_LOWER}:latest || true
-            
-            # Если образ не скачался, используем latest тег из основного ветки
             IMAGE_TAG="latest"
             if ! docker pull ${IMAGE_NAME_LOWER}:latest 2>/dev/null; then
               IMAGE_TAG="${{ github.ref_name }}-${{ github.sha }}"
               docker pull ${IMAGE_NAME_LOWER}:${IMAGE_TAG} || true
             fi
-            
-            # Запускаем новый контейнер
-            # ROOT_PATH не устанавливается по умолчанию (подходит для поддомена api.automatoria.ru)
-            # Если используете automatoria.ru/api/, добавьте: -e ROOT_PATH=/api \
-            # --pid=host позволяет контейнеру посылать сигналы процессам на хосте (для перезагрузки Nginx)
-            docker run -d \
-              --name deploy-api \
-              --restart unless-stopped \
-              --pid=host \
-              -p 8000:8000 \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v /root/deploy_api/containers:/app/containers \
-              -v /etc/nginx:/etc/nginx \
-              -e DOMAIN=${{ secrets.DOMAIN }} \
-              -e SSH_HOST=${{ secrets.SSH_HOST }} \
-              -e SSH_USER=${{ secrets.SSH_USER }} \
-              -e RUN_ON_SERVER=1 \
-              -e USE_HTTPS=1 \
-              ${IMAGE_NAME_LOWER}:${IMAGE_TAG} || {
-                echo "Warning: Failed to start with --pid=host, trying without it..."
-                docker run -d \
-                  --name deploy-api \
-                  --restart unless-stopped \
-                  -p 8000:8000 \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  -v /root/deploy_api/containers:/app/containers \
-                  -v /etc/nginx:/etc/nginx \
-                  -e DOMAIN=${{ secrets.DOMAIN }} \
-                  -e SSH_HOST=${{ secrets.SSH_HOST }} \
-                  -e SSH_USER=${{ secrets.SSH_USER }} \
-                  -e RUN_ON_SERVER=1 \
-                  -e USE_HTTPS=1 \
-                  ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
-              }
-            
-            # Очищаем старые образы
+            docker run -d --name deploy-api --restart unless-stopped --pid=host -p 8000:8000 -v /var/run/docker.sock:/var/run/docker.sock -v /root/deploy_api/containers:/app/containers -v /etc/nginx:/etc/nginx -e DOMAIN=${{ secrets.DOMAIN }} -e SSH_HOST=${{ secrets.SSH_HOST }} -e SSH_USER=${{ secrets.SSH_USER }} -e RUN_ON_SERVER=1 -e USE_HTTPS=1 ${IMAGE_NAME_LOWER}:${IMAGE_TAG} || docker run -d --name deploy-api --restart unless-stopped -p 8000:8000 -v /var/run/docker.sock:/var/run/docker.sock -v /root/deploy_api/containers:/app/containers -v /etc/nginx:/etc/nginx -e DOMAIN=${{ secrets.DOMAIN }} -e SSH_HOST=${{ secrets.SSH_HOST }} -e SSH_USER=${{ secrets.SSH_USER }} -e RUN_ON_SERVER=1 -e USE_HTTPS=1 ${IMAGE_NAME_LOWER}:${IMAGE_TAG}
             docker image prune -f
-            
-            # Проверяем конфигурацию Nginx и перезагружаем (если доступен)
             if command -v nginx >/dev/null 2>&1; then
               nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
             fi
-
