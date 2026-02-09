@@ -1,253 +1,54 @@
-# Deploy API
+# Git Push Deploy
 
-API для автоматического деплоя Docker-контейнеризованных сайтов на сервер.
+Деплой Astro-сайтов через `git push`. Post-receive хук собирает Docker и настраивает nginx.
 
-## 🚀 Возможности
+## Структура
 
-- Принимает JSON файл с проектом (например, Astro сайт)
-- Создает Docker образ и деплоит на сервер
-- Автоматически настраивает Nginx для маршрутизации
-- Каждый деплой доступен по уникальному хэшу: `https://{your-domain}/{hash}`
+```
+├── example.json          # Пример JSON с проектом
+├── example.json.example  # Шаблон (без секретов)
+├── scripts/
+│   ├── parse_json_to_folder.py   # Локально: JSON → папка проекта
+│   └── server_setup/             # Настройка сервера
+│       ├── setup_fresh_server.sh # Первичная настройка (git, docker, nginx)
+│       ├── post-receive.template # Хук для deploy при push
+│       ├── create_bare_repo.sh   # Создать bare repo (если не авто)
+│       └── README.md
+└── parsed_project/       # Выход parse_json (игнор Git)
+```
 
-## 📋 Требования
+## Быстрый старт
 
-- Python 3.11+
-- Docker
-- SSH доступ к серверу
-- Nginx на сервере
+### 1. Локально: создать проект из JSON
 
-## 🔧 Установка
-
-### Локальная разработка
-
-1. Клонируйте репозиторий:
 ```bash
-git clone <repository-url>
-cd deploy_api
+python3 scripts/parse_json_to_folder.py
+cd parsed_project/ХЭШ
+git init && git add . && git commit -m "Initial"
+git remote add origin git@СЕРВЕР:/var/git/sites/ХЭШ.git
+git push -u origin main
 ```
 
-2. Создайте виртуальное окружение:
+### 2. Сервер: первичная настройка (один раз)
+
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или
-venv\Scripts\activate  # Windows
+export DOMAIN=example.com
+sudo bash scripts/server_setup/setup_fresh_server.sh
 ```
 
-3. Установите зависимости:
+### 3. Bare repo
+
+Если репо создаётся автоматически при первом push — добавь в логику установку `post-receive` из `/opt/deploy/scripts/post-receive.template`.
+
+Иначе вручную: `sudo bash scripts/server_setup/create_bare_repo.sh ХЭШ`
+
+## Один post-receive на все репо
+
+Можно использовать симлинк вместо копии в каждый репо:
+
 ```bash
-pip install -r requirements.txt
+ln -sf /opt/deploy/scripts/post-receive /var/git/sites/ХЭШ.git/hooks/post-receive
+chmod +x /var/git/sites/ХЭШ.git/hooks/post-receive
 ```
 
-4. Настройте переменные окружения (создайте `.env` файл для локальной разработки):
-```bash
-DOMAIN=your-domain.com
-# LOCAL_TEST=1 - только для локального тестирования
-```
-
-5. Запустите API:
-```bash
-python run.py
-```
-
-API будет доступен на `http://localhost:8000`
-
-### Docker
-
-1. Постройте образ:
-```bash
-docker build -t deploy-api .
-```
-
-2. Запустите контейнер:
-```bash
-docker run -d \
-  --name deploy-api \
-  -p 8000:8000 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v ./containers:/app/containers \
-  -e DOMAIN=your-domain.com \
-  -e RUN_ON_SERVER=1 \
-  deploy-api
-```
-
-**Примечание:** При деплое на сервер через GitHub Actions SSH ключ не нужен - API работает напрямую через Docker socket.
-
-### Docker Compose
-
-1. Создайте `.env` файл (см. `.env.example`)
-
-2. Запустите:
-```bash
-docker-compose up -d
-```
-
-## 🔐 Настройка секретов
-
-### GitHub Secrets (для CI/CD)
-
-В настройках репозитория GitHub (Settings → Secrets and variables → Actions) добавьте следующие secrets:
-
-- `SSH_HOST` - IP адрес вашего сервера
-- `SSH_USER` - пользователь для SSH (например: `root` или `deploy`)
-- `SSH_PRIVATE_KEY` - **приватный SSH ключ для доступа к серверу** (содержимое файла ключа)
-- `DOMAIN` - ваш домен сайта
-- `GITHUB_TOKEN` - автоматически предоставляется GitHub Actions
-
-**Важно:** SSH ключ используется **только** GitHub Actions для первоначального деплоя API на сервер. После деплоя API работает на сервере напрямую через Docker socket (монтируется `/var/run/docker.sock`) и SSH больше не нужен в коде приложения.
-
-## 📝 Использование API
-
-### Endpoint: POST `/deploy`
-
-Принимает JSON файл с структурой проекта.
-
-**Пример запроса (локально):**
-```bash
-curl -X POST "http://localhost:8000/deploy" \
-  -F "file=@example.json"
-```
-
-**Пример запроса (на сервере):**
-```bash
-# По IP и порту
-curl -X POST "http://your-server-ip:8000/deploy" \
-  -F "file=@example.json"
-
-# Через домен (если настроен Nginx)
-curl -X POST "https://api.your-domain.com/deploy" \
-  -F "file=@example.json"
-```
-
-**Ответ:**
-```json
-{
-  "telegram_id": "123456789",
-  "url": "https://your-domain.com/1d2637e8889b"
-}
-```
-
-### Endpoint: GET `/health`
-
-Проверка здоровья API.
-
-### Endpoint: GET `/docs`
-
-Swagger документация API. Доступна по адресу:
-- Локально: `http://localhost:8000/docs`
-- На сервере: `http://your-server-ip:8000/docs` или `https://api.your-domain.com/docs`
-
-## 🧪 Тестирование
-
-### Локальный тест деплоя
-```bash
-python scripts/test_local_deploy.py
-```
-
-Этот скрипт:
-- Запускает API локально
-- Выполняет деплой
-- Создает Docker контейнер локально
-- Настраивает прокси для доступа к сайту
-- Открывает сайт в браузере
-
-## 🔄 CI/CD
-
-Проект настроен с GitHub Actions:
-
-- **CI** (`.github/workflows/ci.yml`) - запускается на каждый PR:
-  - Линтинг кода
-  - Тесты
-  - Проверка сборки Docker образа
-
-- **Deploy** (`.github/workflows/deploy.yml`) - запускается при пуше в main:
-  - Собирает Docker образ
-  - Публикует в GitHub Container Registry
-  - Деплоит на сервер через SSH
-
-## 🌐 Доступ к API после деплоя
-
-После деплоя через GitHub Actions API доступен по адресу:
-
-### Прямой доступ (по IP и порту)
-```bash
-http://{your-server-ip}:8000
-```
-
-**Пример:**
-```bash
-curl http://your-server-ip:8000/health
-```
-
-### Через Nginx (рекомендуется)
-
-Для более безопасного доступа через домен, настройте Nginx для проксирования запросов к API:
-
-1. Создайте конфиг `/etc/nginx/sites-available/api`:
-```nginx
-server {
-    listen 80;
-    server_name api.your-domain.com;
-
-    location / {
-        proxy_pass http://localhost:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-2. Включите конфиг:
-```bash
-ln -s /etc/nginx/sites-available/api /etc/nginx/sites-enabled/
-nginx -t
-systemctl reload nginx
-```
-
-3. API будет доступен по адресу:
-```bash
-http://api.your-domain.com
-# или
-https://api.your-domain.com (если настроен SSL)
-```
-
-**Пример использования:**
-```bash
-curl -X POST "https://api.your-domain.com/deploy" \
-  -F "file=@example.json"
-```
-
-## 📁 Структура проекта
-
-```
-deploy_api/
-├── src/                    # Исходный код API
-│   ├── main.py            # FastAPI приложение
-│   ├── docker_manager.py  # Управление Docker (создание образов)
-│   ├── deploy_manager.py  # Деплой контейнеров (локально/на сервере)
-│   ├── nginx_manager.py   # Конфигурация Nginx
-│   └── ...
-├── scripts/               # Вспомогательные скрипты
-├── containers/            # Временные проекты (игнорируется Git)
-├── Dockerfile            # Docker образ API
-├── docker-compose.yml    # Docker Compose конфигурация
-└── requirements.txt      # Python зависимости
-```
-
-## 🔒 Безопасность
-
-- `example.json` содержит секретные данные и игнорируется Git
-- `containers/` содержит временные данные и игнорируется Git
-- SSH ключи должны храниться безопасно
-- Используйте переменные окружения для конфигурации
-
-## 📄 Лицензия
-
-MIT
-
+См. `scripts/server_setup/README.md` для деталей.
