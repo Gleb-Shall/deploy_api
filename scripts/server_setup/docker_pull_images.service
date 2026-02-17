@@ -1,0 +1,7 @@
+[Unit]
+Description=Pull Docker base images for deploy (node, nginx)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/deploy_api/scripts/docker_pull_images.sh

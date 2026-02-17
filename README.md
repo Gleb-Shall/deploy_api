@@ -1,54 +1,81 @@
 # Git Push Deploy
 
-Деплой Astro-сайтов через `git push`. Post-receive хук собирает Docker и настраивает nginx.
+Деплой Astro-сайтов через `git push`. Push в bare-репо → checkout → Docker build → nginx. Очередь Redis, до 2 одновременных деплоев, pnpm.
 
-## Структура
+## Структура проекта
 
 ```
-├── example.json          # Пример JSON с проектом
-├── example.json.example  # Шаблон (без секретов)
+├── example.json
+├── example.json.example
 ├── scripts/
-│   ├── parse_json_to_folder.py   # Локально: JSON → папка проекта
-│   └── server_setup/             # Настройка сервера
-│       ├── setup_fresh_server.sh # Первичная настройка (git, docker, nginx)
-│       ├── post-receive.template # Хук для deploy при push
-│       ├── create_bare_repo.sh   # Создать bare repo (если не авто)
+│   ├── parse_json_to_folder.py   # JSON → папка проекта (локально)
+│   ├── stress_deploy.sh          # Стресс-тест: параллельный push N сайтов
+│   └── server_setup/
+│       ├── setup_fresh_server.sh # Первичная настройка сервера
+│       ├── post-receive.template # Хук: checkout → очередь → deploy
+│       ├── git_wrap.sh           # Обёртка для push: создаёт репо, ставит post-receive
+│       ├── deploy_single.sh      # Деплой одного сайта (вызывается воркером)
+│       ├── deploy_worker.sh      # Воркер очереди Redis
+│       ├── remove_site.sh        # Удаление сайта (-A = удалить все)
+│       ├── PATHS.md              # Пути на сервере
 │       └── README.md
-└── parsed_project/       # Выход parse_json (игнор Git)
+└── parsed_project/               # Выход parse_json (в .gitignore)
 ```
 
 ## Быстрый старт
 
-### 1. Локально: создать проект из JSON
+### 1. Сервер: первичная настройка (один раз)
+
+```bash
+export DOMAIN=automatoria.ru
+scp -r scripts/server_setup root@СЕРВЕР:/tmp/
+ssh root@СЕРВЕР "cd /tmp/server_setup && sudo bash setup_fresh_server.sh"
+```
+
+Добавь в `/home/git/.ssh/authorized_keys`:
+```
+command="/opt/deploy_api/scripts/git_wrap.sh" ssh-rsa AAAA...твой_ключ
+```
+
+### 2. Локально: создать проект и запушить
 
 ```bash
 python3 scripts/parse_json_to_folder.py
 cd parsed_project/ХЭШ
 git init && git add . && git commit -m "Initial"
-git remote add origin git@СЕРВЕР:/var/git/sites/ХЭШ.git
+git remote add origin git@СЕРВЕР:sites/ХЭШ.git
 git push -u origin main
 ```
 
-### 2. Сервер: первичная настройка (один раз)
+При первом push git_wrap создаёт bare-репо, ставит post-receive. Push попадает в очередь Redis, воркер собирает Docker и настраивает nginx. Сайт: `https://DOMAIN/ХЭШ/`.
+
+## Архитектура
+
+- **Инфраструктура:** `/opt/deploy_api/scripts/` — скрипты
+- **Данные:** `/opt/deploy/` — registry, work tree каждого сайта
+- **Git:** `/var/git/sites/` — bare-репо
+- **Очередь:** Redis `deploy_queue`, 2 воркера (max 2 деплоя одновременно)
+
+Подробнее: `scripts/server_setup/PATHS.md`, `scripts/server_setup/README.md`
+
+## Cursor IDE (ecc-universal)
+
+Правила, агенты, команды и MCP для Cursor ставятся в `.cursor/` в корне репо (официальный способ):
 
 ```bash
-export DOMAIN=example.com
-sudo bash scripts/server_setup/setup_fresh_server.sh
+npm install
+npm run cursor:install -- typescript
+# или несколько языков:
+npm run cursor:install -- python golang
 ```
 
-### 3. Bare repo
+Эквивалент вызова из доки: `./install.sh --target cursor python golang` (скрипт запускается из корня проекта, чтобы создавалась именно проектная `.cursor/`).
 
-Если репо создаётся автоматически при первом push — добавь в логику установку `post-receive` из `/opt/deploy/scripts/post-receive.template`.
+**Подробнее:** см. `docs/README.md` — скрипты для локальной разработки (не нужны на сервере).
 
-Иначе вручную: `sudo bash scripts/server_setup/create_bare_repo.sh ХЭШ`
-
-## Один post-receive на все репо
-
-Можно использовать симлинк вместо копии в каждый репо:
+## Удаление сайта
 
 ```bash
-ln -sf /opt/deploy/scripts/post-receive /var/git/sites/ХЭШ.git/hooks/post-receive
-chmod +x /var/git/sites/ХЭШ.git/hooks/post-receive
+sudo /opt/deploy_api/scripts/remove_site.sh PAGE_HASH
+sudo /opt/deploy_api/scripts/remove_site.sh -A    # удалить все
 ```
-
-См. `scripts/server_setup/README.md` для деталей.

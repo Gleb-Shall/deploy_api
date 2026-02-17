@@ -2,23 +2,70 @@
 #
 # Удаление деплоенного сайта
 # Использование: sudo bash remove_site.sh PAGE_HASH [--keep-repo]
+#               sudo bash remove_site.sh -A [--keep-repo]
 #
 # PAGE_HASH   — хэш страницы (например 1d2637e8889b)
-# По умолчанию удаляет и bare git repo — при следующем push git_wrap создаст его заново.
-# --keep-repo — оставить bare репо (сайт не будет доступен, но push сработает без пересоздания)
+# -A          — удалить ВСЕ задеплоенные сайты
+# --keep-repo — не удалять git репо (по умолчанию репо удаляется)
 #
 
 set -e
 
-PAGE_HASH="$1"
 REGISTRY_FILE="/opt/deploy/registry.json"
 NGINX_DEPLOY_DIR="/etc/nginx/sites-available/deploy"
 GIT_BASE="/var/git/sites"
+SCRIPTS_DIR="/opt/deploy_api/scripts"
 
+if [[ "$1" == "-A" ]]; then
+  # Удалить все сайты (объединяем все источники — при падении сборки registry/nginx могут быть пусты)
+  KEEP_REPO=false
+  [[ "$2" == "--keep-repo" ]] && KEEP_REPO=true
+  declare -A HASH_SET
+  shopt -s nullglob
+  # 1. registry.json
+  if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    for h in $(jq -r 'keys[]' "$REGISTRY_FILE" 2>/dev/null); do
+      [[ -n "$h" && "$h" != "null" ]] && HASH_SET[$h]=1
+    done
+  fi
+  # 2. nginx конфиги
+  for f in "$NGINX_DEPLOY_DIR"/*.conf; do
+    [[ -f "$f" ]] && HASH_SET["$(basename "$f" .conf)"]=1
+  done
+  # 3. work tree (/opt/deploy/*) — есть при падении сборки
+  for d in /opt/deploy/*/; do
+    [[ -d "$d" ]] && HASH_SET["$(basename "$d")"]=1
+  done
+  # 4. git репо (/var/git/sites/*.git)
+  for r in "${GIT_BASE}"/*.git; do
+    [[ -d "$r" ]] && HASH_SET["$(basename "$r" .git)"]=1
+  done
+  shopt -u nullglob
+  HASHES=("${!HASH_SET[@]}")
+  if [[ ${#HASHES[@]} -eq 0 ]]; then
+    echo "Нет задеплоенных сайтов"
+    exit 0
+  fi
+  echo "Удаление ${#HASHES[@]} сайтов..."
+  for h in "${HASHES[@]}"; do
+    [[ -n "$h" && "$h" != "null" ]] || continue
+    if $KEEP_REPO; then
+      "$SCRIPTS_DIR/remove_site.sh" "$h" --keep-repo
+    else
+      "$SCRIPTS_DIR/remove_site.sh" "$h"
+    fi
+  done
+  echo "Все сайты удалены."
+  exit 0
+fi
+
+PAGE_HASH="$1"
 if [[ -z "$PAGE_HASH" || "$PAGE_HASH" == "--keep-repo" ]]; then
   echo "Использование: $0 PAGE_HASH [--keep-repo]"
+  echo "               $0 -A [--keep-repo]  — удалить все сайты"
   echo "  PAGE_HASH   — хэш сайта (например 1d2637e8889b)"
-  echo "  --keep-repo — не удалять git репо (по умолчанию репо удаляется, push создаст его заново)"
+  echo "  -A          — удалить все задеплоенные сайты"
+  echo "  --keep-repo — не удалять git репо"
   exit 1
 fi
 
@@ -61,6 +108,7 @@ fi
 if [[ -f "$CONFIG_FILE" ]]; then
   rm "$CONFIG_FILE"
   echo "  Nginx конфиг удалён"
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 else
   echo "  Nginx конфиг не найден"
 fi
@@ -97,5 +145,13 @@ if [[ "$PURGE_REPO" == true ]]; then
 else
   echo "  Git репозиторий оставлен (--keep-repo)"
 fi
+
+# Лог удаления
+DEPLOY_LOG="${DEPLOY_LOG:-/var/log/deploy/deploy.log}"
+AT=$(date -Iseconds)
+KEEP_REPO_VAL="false"
+[[ "$PURGE_REPO" == false ]] && KEEP_REPO_VAL="true"
+ENTRY="{\"action\":\"remove\",\"hash\":\"$PAGE_HASH\",\"at\":\"$AT\",\"keep_repo\":$KEEP_REPO_VAL}"
+echo "$ENTRY" >> "$DEPLOY_LOG" 2>/dev/null || true
 
 echo "Готово. Сайт $PAGE_HASH удалён."

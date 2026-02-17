@@ -3,12 +3,12 @@
 # Вывод в /dev/null — иначе git protocol ломается (bad line length character)
 
 GIT_BASE="/var/git/sites"
-HOOK="/opt/deploy/scripts/post-receive"
+SCRIPTS_DIR="/opt/deploy_api/scripts"
+HOOK="$SCRIPTS_DIR/post-receive"
 
 exec 3>&1 4>&2 1>/dev/null 2>/dev/null
-mkdir -p /opt/deploy/scripts
 if [ ! -f "$HOOK" ]; then
-  for t in /opt/deploy/scripts/post-receive.template /tmp/deploy_api/scripts/server_setup/post-receive.template "$(dirname "$0")/post-receive.template"; do
+  for t in "$SCRIPTS_DIR/post-receive.template" /tmp/deploy_api/scripts/server_setup/post-receive.template "$(dirname "$0")/post-receive.template"; do
     [ -f "$t" ] && cp "$t" "$HOOK" && chmod +x "$HOOK" && break
   done
 fi

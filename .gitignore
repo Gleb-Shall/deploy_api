@@ -31,6 +31,7 @@ wheels/
 *.swp
 *.swo
 *~
+local_develope/
 
 # Docker и контейнеры
 containers/
@@ -51,6 +52,12 @@ mtls/
 # Environment variables
 .env
 .env.local
+
+# Node
+node_modules/
+
+# Cursor IDE
+.cursor
 
 # OS
 .DS_Store
