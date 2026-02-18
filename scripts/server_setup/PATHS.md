@@ -70,7 +70,6 @@ command="/opt/deploy_api/scripts/git_wrap.sh" ssh-rsa AAAA...
 ## Redis
 
 - Очередь: `deploy_queue`
-- Очередь для чат-бота: `deploy:notify` (BLPOP для получения событий)
 - Подключение: 127.0.0.1:6379 (REDIS_HOST, REDIS_PORT)
 
 ## Логи

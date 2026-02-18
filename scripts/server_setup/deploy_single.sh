@@ -7,15 +7,57 @@
 set -e
 
 PAGE_HASH="$1"
-[[ -n "$PAGE_HASH" ]] || { echo "Usage: $0 PAGE_HASH" >&2; exit 1; }
+DEPLOY_ID="$2"  # Опциональный уникальный ID деплоя
+[[ -n "$PAGE_HASH" ]] || { echo "Usage: $0 PAGE_HASH [DEPLOY_ID]" >&2; exit 1; }
 
 WORK_TREE="/opt/deploy/${PAGE_HASH}"
 CONTAINER_NAME="deploy-${PAGE_HASH}"
 IMAGE_NAME="deploy-${PAGE_HASH}"
 REGISTRY_FILE="/opt/deploy/registry.json"
+PORTS_QUEUE_EVEN="/opt/deploy/ports_queue_even.txt"  # Чётные порты (9000, 9002, ...)
+PORTS_QUEUE_ODD="/opt/deploy/ports_queue_odd.txt"    # Нечётные порты (9001, 9003, ...)
 NGINX_DEPLOY_DIR="/etc/nginx/sites-available/deploy"
+REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+
+# Путь к скрипту управления очередями портов
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANAGE_PORTS_SCRIPT="${SCRIPT_DIR}/manage_ports_queue.sh"
+
+# Определяем, какой файл портов использовать (по WORKER_ID или по умолчанию)
+# Воркер 1 → чётные порты (9000, 9002, ...), Воркер 2 → нечётные порты (9001, 9003, ...)
+WORKER_ID="${WORKER_ID:-}"
+if [[ "$WORKER_ID" =~ ^[12]$ ]] || [[ "$WORKER_ID" =~ -1$ ]] || [[ "$WORKER_ID" =~ worker-?1 ]]; then
+  # Воркер 1 → чётные порты
+  PORTS_QUEUE_FILE="$PORTS_QUEUE_EVEN"
+  PORT_TYPE="even"
+elif [[ "$WORKER_ID" =~ -2$ ]] || [[ "$WORKER_ID" =~ worker-?2 ]]; then
+  # Воркер 2 → нечётные порты
+  PORTS_QUEUE_FILE="$PORTS_QUEUE_ODD"
+  PORT_TYPE="odd"
+else
+  # По умолчанию: если WORKER_ID не задан или не распознан, используем чётные
+  PORTS_QUEUE_FILE="$PORTS_QUEUE_EVEN"
+  PORT_TYPE="even"
+fi
+
+# Если есть DEPLOY_ID, используем уникальный ключ, иначе старый формат для обратной совместимости
+if [[ -n "$DEPLOY_ID" ]]; then
+  REDIS_RESULT_KEY="deploy:done:${PAGE_HASH}:${DEPLOY_ID}"
+else
+  REDIS_RESULT_KEY="deploy:done:${PAGE_HASH}"
+fi
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [deploy $PAGE_HASH] $*"; }
+
+# Уведомление о завершении (успех или ошибка)
+notify_deploy_done() {
+    local status="$1"
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" LPUSH "${REDIS_RESULT_KEY}" "$status" >/dev/null 2>&1 || true
+}
+
+# При выходе с ошибкой отправляем "failed"
+trap 'notify_deploy_done "failed"' ERR
 
 [[ -d "$WORK_TREE" ]] || { log "Work tree не найден"; exit 1; }
 
@@ -24,33 +66,118 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [deploy $PAGE_HASH] $*"; }
 log "Сборка образа..."
 if ! docker build -t "$IMAGE_NAME" "$WORK_TREE"; then
   log "Ошибка сборки Docker"
+  notify_deploy_done "failed"
   exit 1
 fi
 
-# Останавливаем старый контейнер
+# Функция возврата порта в очередь при освобождении
+# Определяет правильный файл (чётный/нечётный) автоматически
+# Просто добавляет порт в конец файла - никаких проверок не нужно
+return_port_to_queue() {
+  local port="$1"
+  [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]] && return
+  
+  # Определяем, в какой файл возвращать порт (чётный или нечётный)
+  local target_file
+  if (( port % 2 == 0 )); then
+    target_file="$PORTS_QUEUE_EVEN"
+  else
+    target_file="$PORTS_QUEUE_ODD"
+  fi
+  
+  # Просто добавляем порт в конец файла
+  echo "$port" >> "$target_file"
+}
+
+# Останавливаем старый контейнер и возвращаем порт в очередь
+# Сначала получаем порт из registry, чтобы вернуть его в очередь
+OLD_PORT=""
+if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+  OLD_PORT=$(cat "$REGISTRY_FILE" 2>/dev/null | jq -r --arg h "$PAGE_HASH" '.[$h].container_port // empty' 2>/dev/null)
+fi
+
 docker stop "$CONTAINER_NAME" 2>/dev/null || true
 docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
-# Порт
-PORT=""
-if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
-  REG_CONTENT=$(cat "$REGISTRY_FILE" 2>/dev/null)
-  [[ -n "$REG_CONTENT" && "$REG_CONTENT" == *"{"* ]] && \
-    PORT="$(echo "$REG_CONTENT" | jq -r --arg h "$PAGE_HASH" '.[$h].container_port // empty' 2>/dev/null)"
-fi
-if [[ -z "$PORT" || "$PORT" == "null" ]]; then
-  PORT=$((9000 + $(echo -n "$PAGE_HASH" | cksum | cut -d' ' -f1) % 999))
+# Возвращаем старый порт в очередь (если он был)
+# Если мы используем тот же порт повторно, он просто не будет в очереди, но это нормально
+if [[ -n "$OLD_PORT" && "$OLD_PORT" != "null" ]]; then
+  return_port_to_queue "$OLD_PORT"
 fi
 
-# Реестр
-mkdir -p "$(dirname "$REGISTRY_FILE")"
-if command -v jq >/dev/null 2>&1; then
-  REG_CONTENT=$(cat "$REGISTRY_FILE" 2>/dev/null)
-  [[ -z "$REG_CONTENT" || "$REG_CONTENT" != *"{"* ]] && REG_CONTENT="{}"
-  echo "$REG_CONTENT" | jq --arg h "$PAGE_HASH" --argjson p "$PORT" --arg n "$CONTAINER_NAME" \
+# Функция проверки доступности порта
+is_port_available() {
+  local port="$1"
+  
+  # 1. Проверяем через docker ps (все контейнеры, включая остановленные)
+  # Формат вывода: "127.0.0.1:9995->8000/tcp" или "0.0.0.0:9995->8000/tcp"
+  if docker ps -a --format '{{.Ports}}' 2>/dev/null | grep -qE ":(127\.0\.0\.1:)?${port}->|:0\.0\.0\.0:${port}->"; then
+    return 1
+  fi
+  
+  # 2. Проверяем через ss (если доступен)
+  if command -v ss >/dev/null 2>&1; then
+    if ss -tuln 2>/dev/null | grep -q ":${port} "; then
+      return 1
+    fi
+  # 3. Или через netstat (альтернатива)
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -tuln 2>/dev/null | grep -q ":${port} "; then
+      return 1
+    fi
+  fi
+  
+  return 0
+}
+
+
+# Функция выделения свободного порта из очереди (O(1) операция)
+# Простая логика: берём первую строку из файла, удаляем её
+# Блокировка не нужна: воркер обрабатывает задачи последовательно, файлы разделены по воркерам
+allocate_port() {
+  local reg_content=""
+  
+  # Инициализируем обе очереди, если хотя бы одна не существует
+  if [[ ! -f "$PORTS_QUEUE_EVEN" ]] || [[ ! -f "$PORTS_QUEUE_ODD" ]] || \
+     [[ ! -s "$PORTS_QUEUE_EVEN" ]] || [[ ! -s "$PORTS_QUEUE_ODD" ]]; then
+    "$MANAGE_PORTS_SCRIPT" init
+  fi
+  
+  # Берём первый порт из своей очереди (O(1) операция)
+  # Воркер 1 использует чётные порты, воркер 2 - нечётные
+  local port=$(head -n 1 "$PORTS_QUEUE_FILE" 2>/dev/null)
+  
+  # Если очередь пуста, переинициализируем
+  if [[ -z "$port" ]]; then
+    "$MANAGE_PORTS_SCRIPT" rebuild
+    port=$(head -n 1 "$PORTS_QUEUE_FILE" 2>/dev/null)
+  fi
+  
+  if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+    log "Не удалось выделить порт из очереди"
+    return 1
+  fi
+  
+  # Удаляем порт из очереди (удаляем первую строку)
+  tail -n +2 "$PORTS_QUEUE_FILE" > "${PORTS_QUEUE_FILE}.tmp" 2>/dev/null && mv "${PORTS_QUEUE_FILE}.tmp" "$PORTS_QUEUE_FILE" 2>/dev/null || true
+  
+  # Записываем порт в registry
+  mkdir -p "$(dirname "$REGISTRY_FILE")"
+  if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    reg_content=$(cat "$REGISTRY_FILE" 2>/dev/null)
+  fi
+  [[ -z "$reg_content" || "$reg_content" != *"{"* ]] && reg_content="{}"
+  echo "$reg_content" | jq --arg h "$PAGE_HASH" --argjson p "$port" --arg n "$CONTAINER_NAME" \
     '.[$h] = {container_port: $p, container_name: $n}' > "${REGISTRY_FILE}.tmp"
   mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
-fi
+  
+  echo "$port"
+}
+
+# Выделяем порт из очереди (O(1) операция, без блокировок)
+PORT=$(allocate_port)
+[[ -n "$PORT" ]] || { log "Ошибка выделения порта"; exit 1; }
+log "Выделен порт: $PORT"
 
 # Запуск контейнера
 log "Запуск контейнера на порту $PORT..."
@@ -87,5 +214,8 @@ NGINXEOF
 
 # Явный reload — path unit может не сработать сразу
 nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+
+# Уведомляем post-receive о завершении (для синхронного деплоя)
+notify_deploy_done "ok"
 
 log "Готово."

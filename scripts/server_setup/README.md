@@ -71,8 +71,6 @@ sudo /opt/deploy_api/scripts/remove_site.sh PAGE_HASH
 tail -f /var/log/deploy/deploy.log
 ```
 
-**Очередь для чат-бота** — `deploy:notify`. Бот слушает: `BLPOP deploy:notify 0`. При каждом деплое воркер кладёт туда JSON (hash, start, end, result, duration_sec, error). Запись удаляется после BLPOP.
-
 **Логи воркеров:** `/var/log/deploy/worker-1.log`, `worker-2.log` или `journalctl -u deploy-worker-1 -u deploy-worker-2 -f`
 
 ## Сайт не открывается

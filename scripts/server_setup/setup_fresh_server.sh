@@ -53,6 +53,7 @@ mkdir -p "$(dirname "$REGISTRY_FILE")"
 mkdir -p "$NGINX_DEPLOY_DIR"
 echo '{}' > "$REGISTRY_FILE"
 chmod 644 "$REGISTRY_FILE"
+echo "$DOMAIN" > "$(dirname "$REGISTRY_FILE")/domain.txt" 2>/dev/null || true
 echo "   ✅ $GIT_BASE, $WORK_TREE_BASE, $SCRIPTS_DIR, $NGINX_DEPLOY_DIR"
 
 # 4. Права для git
@@ -183,9 +184,10 @@ cp "$SCRIPT_SRC/remove_site.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/deploy_single.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/deploy_worker.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/check_deploy_status.sh" "$SCRIPTS_DIR/"
+cp "$SCRIPT_SRC/manage_ports_queue.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/docker_pull_images.sh" "$SCRIPTS_DIR/" 2>/dev/null || true
 cp "$SCRIPT_SRC/docker_pull_images.service" "$SCRIPT_SRC/docker_pull_images.timer" /etc/systemd/system/ 2>/dev/null || true
-chmod +x "$SCRIPTS_DIR"/post-receive "$SCRIPTS_DIR"/git_wrap.sh "$SCRIPTS_DIR"/remove_site.sh "$SCRIPTS_DIR"/deploy_single.sh "$SCRIPTS_DIR"/deploy_worker.sh "$SCRIPTS_DIR"/check_deploy_status.sh
+chmod +x "$SCRIPTS_DIR"/post-receive "$SCRIPTS_DIR"/git_wrap.sh "$SCRIPTS_DIR"/remove_site.sh "$SCRIPTS_DIR"/deploy_single.sh "$SCRIPTS_DIR"/deploy_worker.sh "$SCRIPTS_DIR"/check_deploy_status.sh "$SCRIPTS_DIR"/manage_ports_queue.sh
 chmod +x "$SCRIPTS_DIR"/docker_pull_images.sh 2>/dev/null || true
 chown -R root:git "$(dirname "$SCRIPTS_DIR")" 2>/dev/null || true
 chmod 755 "$SCRIPTS_DIR"

@@ -51,7 +51,7 @@ git push origin main
 | 1 | BLPOP deploy_queue 0 — блокирующее ожидание |
 | 2 | Получает JOB (PAGE_HASH) |
 | 3 | Запускает deploy_single.sh "$JOB" |
-| 4 | Записывает результат в deploy.log и deploy:notify |
+| 4 | Записывает результат в deploy.log |
 | 5 | Повтор |
 
 **Кто выполняет:** root (User=root в systemd).

@@ -22,23 +22,41 @@ if [[ "$1" == "-A" ]]; then
   [[ "$2" == "--keep-repo" ]] && KEEP_REPO=true
   declare -A HASH_SET
   shopt -s nullglob
+  # Функция проверки валидности хэша
+  is_valid_hash() {
+    local hash="$1"
+    [[ -n "$hash" && "$hash" != "null" && "$hash" =~ ^[a-zA-Z0-9_.-]+$ ]]
+  }
+  
   # 1. registry.json
   if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
     for h in $(jq -r 'keys[]' "$REGISTRY_FILE" 2>/dev/null); do
-      [[ -n "$h" && "$h" != "null" ]] && HASH_SET[$h]=1
+      is_valid_hash "$h" && HASH_SET[$h]=1
     done
   fi
   # 2. nginx конфиги
   for f in "$NGINX_DEPLOY_DIR"/*.conf; do
-    [[ -f "$f" ]] && HASH_SET["$(basename "$f" .conf)"]=1
+    if [[ -f "$f" ]]; then
+      h=$(basename "$f" .conf)
+      is_valid_hash "$h" && HASH_SET["$h"]=1
+    fi
   done
   # 3. work tree (/opt/deploy/*) — есть при падении сборки
+  # Проверяем только директории (не файлы типа registry.json, ports_queue_*.txt)
   for d in /opt/deploy/*/; do
-    [[ -d "$d" ]] && HASH_SET["$(basename "$d")"]=1
+    if [[ -d "$d" ]]; then
+      h=$(basename "$d")
+      # Пропускаем служебные директории и файлы
+      [[ "$h" == "" || "$h" == "." || "$h" == ".." ]] && continue
+      is_valid_hash "$h" && HASH_SET["$h"]=1
+    fi
   done
   # 4. git репо (/var/git/sites/*.git)
   for r in "${GIT_BASE}"/*.git; do
-    [[ -d "$r" ]] && HASH_SET["$(basename "$r" .git)"]=1
+    if [[ -d "$r" ]]; then
+      h=$(basename "$r" .git)
+      is_valid_hash "$h" && HASH_SET["$h"]=1
+    fi
   done
   shopt -u nullglob
   HASHES=("${!HASH_SET[@]}")
@@ -48,12 +66,19 @@ if [[ "$1" == "-A" ]]; then
   fi
   echo "Удаление ${#HASHES[@]} сайтов..."
   for h in "${HASHES[@]}"; do
-    [[ -n "$h" && "$h" != "null" ]] || continue
-    if $KEEP_REPO; then
-      "$SCRIPTS_DIR/remove_site.sh" "$h" --keep-repo
-    else
-      "$SCRIPTS_DIR/remove_site.sh" "$h"
+    # Дополнительная проверка перед рекурсивным вызовом
+    if ! is_valid_hash "$h"; then
+      echo "Пропуск некорректного хэша: '$h'"
+      continue
     fi
+    # Рекурсивный вызов с обработкой ошибок (set -e отключен для этого блока)
+    set +e
+    if $KEEP_REPO; then
+      "$SCRIPTS_DIR/remove_site.sh" "$h" --keep-repo || echo "Ошибка при удалении $h (продолжаем...)"
+    else
+      "$SCRIPTS_DIR/remove_site.sh" "$h" || echo "Ошибка при удалении $h (продолжаем...)"
+    fi
+    set -e
   done
   echo "Все сайты удалены."
   exit 0
