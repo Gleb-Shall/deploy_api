@@ -23,6 +23,13 @@
 │   ├── remove_site.sh
 │   ├── deploy_single.sh
 │   └── deploy_worker.sh
+├── domain_api/                # Domain API (Beget)
+│   ├── api.py
+│   ├── beget_client.py
+│   ├── config.py
+│   ├── requirements.txt
+│   ├── .env                   # Переменные окружения
+│   └── venv/                  # Виртуальное окружение Python
 └── containers/                # (зарезервировано)
 ```
 
@@ -60,6 +67,7 @@ Push URL: `git@СЕРВЕР:sites/{PAGE_HASH}.git`
 - `/etc/systemd/system/deploy-worker-2.service`
 - `/etc/systemd/system/nginx-reload.path`
 - `/etc/systemd/system/nginx-reload.service`
+- `/etc/systemd/system/domain-api.service` (опционально)
 
 ## authorized_keys
 
@@ -76,6 +84,7 @@ command="/opt/deploy_api/scripts/git_wrap.sh" ssh-rsa AAAA...
 
 - `/var/log/deploy/deploy.log` — все деплои (JSONL)
 - `/var/log/deploy/worker-1.log`, `worker-2.log` — логи воркеров
+- `/var/log/deploy/domain-api.log` — логи Domain API (опционально)
 
 ---
 
