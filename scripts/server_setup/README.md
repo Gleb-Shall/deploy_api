@@ -12,15 +12,38 @@ Push в несуществующий репо → создаётся репо, �
 ```
 Копирует все скрипты в `/opt/deploy_api/scripts/`, systemd units, перезапускает воркеры. Сервер по умолчанию: `root@45.90.35.151` (переменная `DEPLOY_SERVER`).
 
+**Только воркеры (пересоздать юниты, добавить CERTBOT_EMAIL):** на сервере после копирования скриптов можно выполнить:
+```bash
+sudo /opt/deploy_api/scripts/install_deploy_workers.sh
+# или с email для certbot:
+sudo CERTBOT_EMAIL=admin@example.com /opt/deploy_api/scripts/install_deploy_workers.sh
+```
+Скрипт создаёт/обновляет `deploy-worker-1.service` и `deploy-worker-2.service`, перезапускает воркеры.
+
+## Переменные окружения
+
+| Переменная       | Где используется        | По умолчанию        | Описание |
+|------------------|-------------------------|---------------------|----------|
+| **DOMAIN**       | setup_fresh_server.sh   | your-domain.com     | Основной домен сервера (превью: `https://DOMAIN/{hash}/`). При setup записывается в `/opt/deploy/domain.txt`. |
+| **CERTBOT_EMAIL**| setup_fresh_server.sh, deploy_single.sh (воркеры) | deploy@${DOMAIN} или из `/opt/deploy/domain.txt`, иначе deploy@<кастомный_домен> | Email для Let's Encrypt (основной и кастомные домены). Чтобы задать свой — укажи при setup или в systemd-юнитах воркеров (см. ниже). |
+| **REDIS_HOST**   | deploy_worker, deploy_single, post-receive | 127.0.0.1 | Хост Redis (очередь деплоев). |
+| **REDIS_PORT**   | то же                  | 6379                 | Порт Redis. |
+
+**CERTBOT_EMAIL для кастомных доменов:** при первом деплое с файлом `domain` в репо certbot запрашивает сертификат для этого домена. Email берётся в порядке: 1) переменная окружения **CERTBOT_EMAIL** (в окружении воркера), 2) `deploy@<содержимое /opt/deploy/domain.txt>`, 3) `deploy@<кастомный_домен>`. Чтобы везде использовать один email, при установке сервера запусти setup с email:  
+`sudo CERTBOT_EMAIL=admin@example.com DOMAIN=example.com bash scripts/server_setup/setup_fresh_server.sh`  
+— тогда он попадёт в конфиг nginx для основного домена и в юниты воркеров (для certbot при деплое кастомных доменов).
+
 ## Настройка (один раз)
 
 1. Скопируй `scripts/server_setup` на сервер.
 
-2. На сервере (задай DOMAIN):
+2. На сервере (задай DOMAIN, при желании CERTBOT_EMAIL):
 ```bash
 sudo DOMAIN=example.com bash scripts/server_setup/setup_fresh_server.sh
+# или с email для Let's Encrypt (основной + кастомные домены):
+sudo CERTBOT_EMAIL=admin@example.com DOMAIN=example.com bash scripts/server_setup/setup_fresh_server.sh
 ```
-Setup установит: пакеты, git (shell=/bin/bash), Redis, Docker, nginx, SSL, воркеры, базовые образы. Сайты: `https://DOMAIN/{hash}/`.
+Setup установит: пакеты, git (shell=/bin/bash), Redis, Docker, nginx, SSL, воркеры, базовые образы. Сайты: `https://DOMAIN/{hash}/`. Кастомные домены: файл `domain` в корне репо, A-запись на сервер → certbot при деплое.
 
 3. Добавь SSH-ключ (локально): `./local_develope/add_git_key.sh root@СЕРВЕР`
 

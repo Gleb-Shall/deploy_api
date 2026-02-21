@@ -90,20 +90,16 @@ return_port_to_queue() {
 }
 
 # Останавливаем старый контейнер и возвращаем порт в очередь
-# Сначала получаем порт из registry, чтобы вернуть его в очередь
+# Сначала получаем порт и кастомный домен из registry (до перезаписи в allocate_port)
 OLD_PORT=""
+OLD_CUSTOM_DOMAIN=""
 if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
   OLD_PORT=$(cat "$REGISTRY_FILE" 2>/dev/null | jq -r --arg h "$PAGE_HASH" '.[$h].container_port // empty' 2>/dev/null)
+  OLD_CUSTOM_DOMAIN=$(cat "$REGISTRY_FILE" 2>/dev/null | jq -r --arg h "$PAGE_HASH" '.[$h].custom_domain // empty' 2>/dev/null)
 fi
 
 docker stop "$CONTAINER_NAME" 2>/dev/null || true
 docker rm "$CONTAINER_NAME" 2>/dev/null || true
-
-# Возвращаем старый порт в очередь (если он был)
-# Если мы используем тот же порт повторно, он просто не будет в очереди, но это нормально
-if [[ -n "$OLD_PORT" && "$OLD_PORT" != "null" ]]; then
-  return_port_to_queue "$OLD_PORT"
-fi
 
 # Функция проверки доступности порта
 is_port_available() {
@@ -174,10 +170,18 @@ allocate_port() {
   echo "$port"
 }
 
-# Выделяем порт из очереди (O(1) операция, без блокировок)
-PORT=$(allocate_port)
-[[ -n "$PORT" ]] || { log "Ошибка выделения порта"; exit 1; }
-log "Выделен порт: $PORT"
+# Порт: при повторном деплое того же сайта используем тот же порт из registry
+if [[ -n "$OLD_PORT" && "$OLD_PORT" != "null" ]] && is_port_available "$OLD_PORT"; then
+  PORT="$OLD_PORT"
+  log "Повторное использование порта: $PORT"
+else
+  if [[ -n "$OLD_PORT" && "$OLD_PORT" != "null" ]]; then
+    return_port_to_queue "$OLD_PORT"
+  fi
+  PORT=$(allocate_port)
+  [[ -n "$PORT" ]] || { log "Ошибка выделения порта"; exit 1; }
+  log "Выделен порт: $PORT"
+fi
 
 # Запуск контейнера
 log "Запуск контейнера на порту $PORT..."
@@ -187,10 +191,83 @@ docker run -d \
   --restart unless-stopped \
   "$IMAGE_NAME"
 
-# Nginx config
+# Кастомный домен: из файла domain в корне проекта (одна строка)
+CUSTOM_DOMAIN=""
+if [[ -f "$WORK_TREE/domain" ]]; then
+  CUSTOM_DOMAIN=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+fi
+[[ -z "$CUSTOM_DOMAIN" ]] && CUSTOM_DOMAIN=""
+
 CONFIG_FILE="${NGINX_DEPLOY_DIR}/${PAGE_HASH}.conf"
-mkdir -p "$NGINX_DEPLOY_DIR"
-cat > "$CONFIG_FILE" << NGINXEOF
+NGINX_CUSTOM_DIR="${NGINX_DEPLOY_DIR}/custom"
+mkdir -p "$NGINX_DEPLOY_DIR" "$NGINX_CUSTOM_DIR"
+
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+  # Сайт только на кастомном домене: убираем превью по /{hash}/ на основном домене
+  rm -f "$CONFIG_FILE"
+  if [[ -n "$OLD_CUSTOM_DOMAIN" && "$OLD_CUSTOM_DOMAIN" != "$CUSTOM_DOMAIN" ]]; then
+    rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
+  fi
+  CUSTOM_CONF="${NGINX_CUSTOM_DIR}/${CUSTOM_DOMAIN}.conf"
+  # Если конфиг уже есть (certbot уже добавил listen 443) — только обновляем порт в proxy_pass
+  if [[ -f "$CUSTOM_CONF" ]]; then
+    sed -i.bak "s|proxy_pass http://127.0.0.1:[0-9]*/|proxy_pass http://127.0.0.1:${PORT}/|g" "$CUSTOM_CONF" 2>/dev/null || \
+      sed -i '' "s|proxy_pass http://127.0.0.1:[0-9]*/|proxy_pass http://127.0.0.1:${PORT}/|g" "$CUSTOM_CONF" 2>/dev/null || true
+    rm -f "${CUSTOM_CONF}.bak" 2>/dev/null || true
+    log "Обновлён порт в конфиге кастомного домена: ${PORT}"
+  else
+    # Первый деплой: пишем server-блок (listen 80), потом certbot добавит 443
+    cat > "$CUSTOM_CONF" << NGINXEOF
+# Кастомный домен для ${PAGE_HASH} (превью на основном домене отключена)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${CUSTOM_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+NGINXEOF
+    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+    # Всегда вызываем certbot: при новом сертификате — получит, при уже существующем — добавит listen 443 в конфиг (нужно после remove+redeploy, когда конфиг писали заново)
+    CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
+    if [[ -z "$CERTBOT_EMAIL" && -f /opt/deploy/domain.txt ]]; then
+      CERTBOT_EMAIL="deploy@$(cat /opt/deploy/domain.txt 2>/dev/null | head -1)"
+    fi
+    [[ -z "$CERTBOT_EMAIL" ]] && CERTBOT_EMAIL="deploy@${CUSTOM_DOMAIN}"
+    log "Настройка SSL для ${CUSTOM_DOMAIN}..."
+    if ! certbot --nginx -d "$CUSTOM_DOMAIN" --redirect --non-interactive --agree-tos -m "$CERTBOT_EMAIL"; then
+      log "Предупреждение: certbot не выполнен для ${CUSTOM_DOMAIN} (проверь A-запись и порт 80)"
+    fi
+  fi
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+  # Обновить registry: добавить custom_domain
+  if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    reg_content=$(cat "$REGISTRY_FILE" 2>/dev/null)
+    [[ -z "$reg_content" || "$reg_content" != *"{"* ]] && reg_content="{}"
+    echo "$reg_content" | jq --arg h "$PAGE_HASH" --arg cd "$CUSTOM_DOMAIN" '.[$h].custom_domain = $cd' > "${REGISTRY_FILE}.tmp"
+    mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
+  fi
+  log "Сайт доступен по https://${CUSTOM_DOMAIN}/ (превью по /${PAGE_HASH}/ отключено)"
+else
+  # Обычный деплой: превью на основном домене по /{hash}/
+  if [[ -n "$OLD_CUSTOM_DOMAIN" ]]; then
+    rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
+  fi
+  cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${PAGE_HASH}
 # Все пути /PAGE_HASH/* идут в контейнер (в т.ч. /_astro/, assets)
 # Astro требует base: '/PAGE_HASH/' в astro.config
@@ -211,6 +288,14 @@ location = /${PAGE_HASH} {
     return 301 /${PAGE_HASH}/;
 }
 NGINXEOF
+  # Убрать custom_domain из registry
+  if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    reg_content=$(cat "$REGISTRY_FILE" 2>/dev/null)
+    [[ -z "$reg_content" || "$reg_content" != *"{"* ]] && reg_content="{}"
+    echo "$reg_content" | jq --arg h "$PAGE_HASH" 'del(.[$h].custom_domain)' > "${REGISTRY_FILE}.tmp"
+    mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
+  fi
+fi
 
 # Явный reload — path unit может не сработать сразу
 nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true

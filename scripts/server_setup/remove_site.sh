@@ -106,7 +106,29 @@ CONTAINER_NAME="deploy-${PAGE_HASH}"
 IMAGE_NAME="deploy-${PAGE_HASH}"
 WORK_TREE="/opt/deploy/${PAGE_HASH}"
 CONFIG_FILE="${NGINX_DEPLOY_DIR}/${PAGE_HASH}.conf"
+NGINX_CUSTOM_DIR="${NGINX_DEPLOY_DIR}/custom"
 REPO_PATH="${GIT_BASE}/${PAGE_HASH}.git"
+PORTS_QUEUE_EVEN="/opt/deploy/ports_queue_even.txt"
+PORTS_QUEUE_ODD="/opt/deploy/ports_queue_odd.txt"
+
+# Из registry: кастомный домен (для удаления nginx custom) и порт (вернуть в очередь)
+CUSTOM_DOMAIN=""
+CONTAINER_PORT=""
+if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+  CUSTOM_DOMAIN=$(jq -r --arg h "$PAGE_HASH" '.[$h].custom_domain // empty' "$REGISTRY_FILE" 2>/dev/null)
+  CONTAINER_PORT=$(jq -r --arg h "$PAGE_HASH" '.[$h].container_port // empty' "$REGISTRY_FILE" 2>/dev/null)
+fi
+
+# Вернуть порт в очередь (чётный → even, нечётный → odd)
+return_port_to_queue() {
+  local port="$1"
+  [[ -z "$port" || "$port" == "null" || ! "$port" =~ ^[0-9]+$ ]] && return
+  if (( port % 2 == 0 )); then
+    echo "$port" >> "$PORTS_QUEUE_EVEN"
+  else
+    echo "$port" >> "$PORTS_QUEUE_ODD"
+  fi
+}
 
 echo "Удаление сайта $PAGE_HASH..."
 
@@ -129,13 +151,22 @@ else
   echo "  Образ не найден"
 fi
 
-# 3. Удалить nginx конфиг
+# 3. Удалить nginx конфиги (кастомный домен + превью по /hash/)
+NGINX_CHANGED=false
+if [[ -n "$CUSTOM_DOMAIN" ]] && [[ -f "${NGINX_CUSTOM_DIR}/${CUSTOM_DOMAIN}.conf" ]]; then
+  rm "${NGINX_CUSTOM_DIR}/${CUSTOM_DOMAIN}.conf"
+  echo "  Nginx конфиг кастомного домена (${CUSTOM_DOMAIN}) удалён"
+  NGINX_CHANGED=true
+fi
 if [[ -f "$CONFIG_FILE" ]]; then
   rm "$CONFIG_FILE"
-  echo "  Nginx конфиг удалён"
-  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+  echo "  Nginx конфиг (превью) удалён"
+  NGINX_CHANGED=true
 else
-  echo "  Nginx конфиг не найден"
+  echo "  Nginx конфиг превью не найден"
+fi
+if [[ "$NGINX_CHANGED" == true ]]; then
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 fi
 
 # 4. Удалить work tree
@@ -146,9 +177,11 @@ else
   echo "  Work tree не найден"
 fi
 
-# 5. Удалить из registry.json
+# 5. Удалить из registry и вернуть порт в очередь
 if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
   if jq -e ".\"$PAGE_HASH\"" "$REGISTRY_FILE" >/dev/null 2>&1; then
+    return_port_to_queue "$CONTAINER_PORT"
+    [[ -n "$CONTAINER_PORT" && "$CONTAINER_PORT" != "null" ]] && echo "  Порт $CONTAINER_PORT возвращён в очередь"
     jq "del(.\"$PAGE_HASH\")" "$REGISTRY_FILE" > "${REGISTRY_FILE}.tmp"
     mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
     echo "  Запись из registry удалена"

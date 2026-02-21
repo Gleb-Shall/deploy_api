@@ -105,60 +105,57 @@ dist
 .env
 DOCKERIGNORE
 
+    # Base path: при кастомном домене (файл domain) — base: '/', иначе превью по /{hash}/ — base: '/{hash}/'
+    SITE_BASE="/${PAGE_HASH}/"
+    if [[ -f "$WORK_TREE/domain" ]]; then
+      CUSTOM_DOMAIN_LINE=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+      [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
+    fi
     # Генерируем astro.config.mjs с правильным base path
-    # Простой подход: заменяем/добавляем base в существующем конфиге
-    log "Генерация astro.config.mjs с base: '/${PAGE_HASH}/'"
+    log "Генерация astro.config.mjs с base: '${SITE_BASE}'"
     if [[ -f "$WORK_TREE/astro.config.mjs" ]]; then
-      # Копируем оригинальный конфиг
       cp "$WORK_TREE/astro.config.mjs" "$WORK_TREE/astro.config.mjs.orig"
-      
-      # Заменяем base (если есть) или добавляем после site (если есть) или в начало объекта
       if grep -q "base:" "$WORK_TREE/astro.config.mjs"; then
-        # Заменяем существующий base
-        sed -i.bak "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed -i '' "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
+        sed -i.bak "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        sed -i '' "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        sed "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       elif grep -q "site:" "$WORK_TREE/astro.config.mjs"; then
-        # Добавляем base после site
         sed -i.bak "/site:/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
         sed -i '' "/site:/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        awk "/site:/ {print; print \"\tbase: '/${PAGE_HASH}/',\"; next} {print}" "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        awk -v b="${SITE_BASE}" '/site:/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       else
-        # Добавляем base в начало объекта defineConfig
         sed -i.bak "/defineConfig({/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
         sed -i '' "/defineConfig({/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        awk "/defineConfig({/ {print; print \"\tbase: '/${PAGE_HASH}/',\"; next} {print}" "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       fi
       rm -f "$WORK_TREE/astro.config.mjs.orig" "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
     elif [[ -f "$WORK_TREE/astro.config.ts" ]]; then
-      # Конвертируем .ts в .mjs и добавляем base
       cp "$WORK_TREE/astro.config.ts" "$WORK_TREE/astro.config.mjs"
-      # Заменяем base или добавляем
       if grep -q "base:" "$WORK_TREE/astro.config.mjs"; then
-        sed -i.bak "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed -i '' "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed "s|base:.*|base: '/${PAGE_HASH}/',|g" "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
+        sed -i.bak "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        sed -i '' "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        sed "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
       else
         sed -i.bak "/defineConfig({/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
         sed -i '' "/defineConfig({/a\\
-	base: '/${PAGE_HASH}/'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        awk "/defineConfig({/ {print; print \"\tbase: '/${PAGE_HASH}/',\"; next} {print}" "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
+	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
       fi
       rm -f "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
     else
-      # Если конфига нет, создаём базовый
-      sed "s/__PAGE_HASH__/$PAGE_HASH/g" << 'ASTROCONFIG' > "$WORK_TREE/astro.config.mjs"
+      # Если конфига нет, создаём базовый (base уже выбран выше по файлу domain)
+      sed "s|__SITE_BASE__|$SITE_BASE|g" << 'ASTROCONFIG' > "$WORK_TREE/astro.config.mjs"
 // @ts-check
 import { defineConfig } from 'astro/config';
 
 // Автоматически сгенерировано при деплое
 export default defineConfig({
-  base: '/__PAGE_HASH__/',
+  base: '__SITE_BASE__',
   output: 'static',
   trailingSlash: 'never',
   compressHTML: true
@@ -183,7 +180,11 @@ ASTROCONFIG
         BLPOP "${REDIS_RESULT_KEY}" "$DEPLOY_TIMEOUT" 2>/dev/null | tail -1 || echo "timeout")
       
       if [[ "$RESULT" == "ok" ]]; then
-        DEPLOY_URL="https://${DOMAIN}/${PAGE_HASH}/"
+        if [[ -n "${CUSTOM_DOMAIN_LINE:-}" ]]; then
+          DEPLOY_URL="https://${CUSTOM_DOMAIN_LINE}/"
+        else
+          DEPLOY_URL="https://${DOMAIN}/${PAGE_HASH}/"
+        fi
         log "Деплой завершён успешно. Сайт: ${DEPLOY_URL}"
         echo "DEPLOY_URL:${DEPLOY_URL}" >&2
       elif [[ "$RESULT" == "failed" ]]; then
@@ -199,6 +200,11 @@ ASTROCONFIG
       log "Redis недоступен, деплой напрямую..."
       if ! /opt/deploy_api/scripts/deploy_single.sh "$PAGE_HASH"; then
         exit 1
+      fi
+      if [[ -n "${CUSTOM_DOMAIN_LINE:-}" ]]; then
+        echo "DEPLOY_URL:https://${CUSTOM_DOMAIN_LINE}/" >&2
+      else
+        echo "DEPLOY_URL:https://${DOMAIN}/${PAGE_HASH}/" >&2
       fi
     fi
   fi

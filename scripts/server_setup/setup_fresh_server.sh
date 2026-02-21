@@ -97,14 +97,14 @@ CERTBOT_EMAIL="${CERTBOT_EMAIL:-deploy@${DOMAIN}}"
 if [ ! -f "$NGINX_MAIN" ]; then
   cat > "$NGINX_MAIN" << NGINXEOF
 # Главный конфиг для deploy-сайтов (Git push -> post-receive)
-# Сайты: https://DOMAIN/{page_hash}/
+# Сайты: https://DOMAIN/{page_hash}/ или по кастомному домену (файл domain в репо)
 
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name $DOMAIN _;
 
-    # Сайты деплоятся в /{page_hash}/
+    # Сайты деплоятся в /{page_hash}/ (превью; при кастомном домене конфиг не создаётся)
     include /etc/nginx/sites-available/deploy/*.conf;
 
     # ACME challenge для Let's Encrypt
@@ -118,8 +118,11 @@ server {
         add_header Content-Type text/plain;
     }
 }
+
+# Кастомные домены (отдельный server на каждый; certbot вызывается в deploy_single)
+include /etc/nginx/sites-available/deploy/custom/*.conf;
 NGINXEOF
-  mkdir -p /var/www/certbot
+  mkdir -p /var/www/certbot /etc/nginx/sites-available/deploy/custom
   rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
   ln -sf "$NGINX_MAIN" /etc/nginx/sites-enabled/deploy_main 2>/dev/null || true
   nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
@@ -183,11 +186,13 @@ cp "$SCRIPT_SRC/git_wrap.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/remove_site.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/deploy_single.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/deploy_worker.sh" "$SCRIPTS_DIR/"
+cp "$SCRIPT_SRC/install_deploy_workers.sh" "$SCRIPTS_DIR/" 2>/dev/null || true
 cp "$SCRIPT_SRC/check_deploy_status.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/manage_ports_queue.sh" "$SCRIPTS_DIR/"
 cp "$SCRIPT_SRC/docker_pull_images.sh" "$SCRIPTS_DIR/" 2>/dev/null || true
 cp "$SCRIPT_SRC/docker_pull_images.service" "$SCRIPT_SRC/docker_pull_images.timer" /etc/systemd/system/ 2>/dev/null || true
 chmod +x "$SCRIPTS_DIR"/post-receive "$SCRIPTS_DIR"/git_wrap.sh "$SCRIPTS_DIR"/remove_site.sh "$SCRIPTS_DIR"/deploy_single.sh "$SCRIPTS_DIR"/deploy_worker.sh "$SCRIPTS_DIR"/check_deploy_status.sh "$SCRIPTS_DIR"/manage_ports_queue.sh
+[[ -f "$SCRIPTS_DIR/install_deploy_workers.sh" ]] && chmod +x "$SCRIPTS_DIR/install_deploy_workers.sh"
 chmod +x "$SCRIPTS_DIR"/docker_pull_images.sh 2>/dev/null || true
 chown -R root:git "$(dirname "$SCRIPTS_DIR")" 2>/dev/null || true
 chmod 755 "$SCRIPTS_DIR"
@@ -202,19 +207,25 @@ echo "🔟  Базовые образы (node, nginx)..."
 # 11. Deploy workers (2 экземпляра, max 2 одновременных деплоя)
 echo ""
 echo "1️⃣1️⃣  Deploy workers (очередь Redis, 2 воркера)..."
-mkdir -p /var/log/deploy
-chmod 755 /var/log/deploy
-touch /var/log/deploy/deploy.log
-chmod 644 /var/log/deploy/deploy.log
-for i in 1 2; do
-  cat > "/etc/systemd/system/deploy-worker-${i}.service" << EOF
+if [[ -x "$SCRIPT_SRC/install_deploy_workers.sh" ]]; then
+  CERTBOT_EMAIL="${CERTBOT_EMAIL:-}" SCRIPTS_DIR="$SCRIPTS_DIR" bash "$SCRIPT_SRC/install_deploy_workers.sh"
+else
+  mkdir -p /var/log/deploy
+  chmod 755 /var/log/deploy
+  touch /var/log/deploy/deploy.log
+  chmod 644 /var/log/deploy/deploy.log
+  for i in 1 2; do
+    WORKER_ENV="Environment=WORKER_ID=$i"
+    [[ -n "${CERTBOT_EMAIL:-}" ]] && WORKER_ENV="Environment=WORKER_ID=$i
+Environment=CERTBOT_EMAIL=$CERTBOT_EMAIL"
+    cat > "/etc/systemd/system/deploy-worker-${i}.service" << EOF
 [Unit]
 Description=Deploy worker $i
 After=redis-server.service docker.service
 
 [Service]
 Type=simple
-Environment=WORKER_ID=$i
+$WORKER_ENV
 ExecStart=$SCRIPTS_DIR/deploy_worker.sh
 Restart=always
 User=root
@@ -224,10 +235,11 @@ StandardError=append:/var/log/deploy/worker-${i}.log
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl enable "deploy-worker-${i}"
-  systemctl start "deploy-worker-${i}"
-done
-echo "   ✅ deploy-worker-1, deploy-worker-2 запущены (логи: /var/log/deploy/worker-*.log)"
+    systemctl enable "deploy-worker-${i}"
+    systemctl start "deploy-worker-${i}"
+  done
+  echo "   ✅ deploy-worker-1, deploy-worker-2 запущены (логи: /var/log/deploy/worker-*.log)"
+fi
 
 # 12. Docker pull timer + проверка nginx
 echo ""

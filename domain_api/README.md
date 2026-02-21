@@ -67,8 +67,7 @@ sudo chmod 600 /opt/deploy_api/domain_api/.env
 
 ## API
 
-- **POST /api/domain/check** — проверка домена. Тело: `{"domain": "example.ru", "period": 1}`. Возвращает доступность и цену.
-- **POST /api/domain/purchase** — покупка. Тело: `{"domain": "example.ru", "period": 1}`. Оплата с баланса Beget.
+- **POST /api/domain/check** — проверка домена. Тело: `{"domain": "example.ru", "period": 1}`. Возвращает доступность и цену. Регистрация доменов через Beget API недоступна (только добавление уже зарегистрированных).
 
 Заголовок `X-API-Key` или параметр `api_key` — если в .env задан API_KEY.
 

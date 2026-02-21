@@ -63,8 +63,7 @@ Push URL: `git@СЕРВЕР:sites/{PAGE_HASH}.git`
 
 ## Systemd
 
-- `/etc/systemd/system/deploy-worker-1.service`
-- `/etc/systemd/system/deploy-worker-2.service`
+- `/etc/systemd/system/deploy-worker-1.service`, `deploy-worker-2.service` — создаются при `setup_fresh_server.sh` или скриптом `install_deploy_workers.sh` (удобно после обновления скриптов или для смены CERTBOT_EMAIL).
 - `/etc/systemd/system/nginx-reload.path`
 - `/etc/systemd/system/nginx-reload.service`
 - `/etc/systemd/system/domain-api.service` (опционально)
