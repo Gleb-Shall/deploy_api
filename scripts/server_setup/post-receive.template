@@ -68,10 +68,18 @@ while read oldrev newrev refname; do
       cp "$WORK_TREE/package.json" "$WORK_TREE/package.cache.json" 2>/dev/null || true
     fi
 
+    # Base path и кастомный домен — нужны до генерации Dockerfile (для проверки sitemap)
+    SITE_BASE="/${PAGE_HASH}/"
+    CUSTOM_DOMAIN_LINE=""
+    if [[ -f "$WORK_TREE/domain" ]]; then
+      CUSTOM_DOMAIN_LINE=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+      [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
+    fi
+
     # Dockerfile с pnpm + BuildKit (без # syntax= — встроенный frontend, без resolve docker.io)
     log "Dockerfile: pnpm + BuildKit"
-    # Quoted heredoc: ${NODE_IMAGE} остаётся как есть для Docker. $PAGE_HASH подставляем отдельно.
-    sed "s/__PAGE_HASH__/$PAGE_HASH/g" << 'DOCKERFILE' > "$WORK_TREE/Dockerfile"
+    # Подстановки: __PAGE_HASH__, __CUSTOM_DOMAIN__ (для проверки sitemap при кастомном домене)
+    sed -e "s/__PAGE_HASH__/$PAGE_HASH/g" -e "s|__CUSTOM_DOMAIN__|${CUSTOM_DOMAIN_LINE:-}|g" << 'DOCKERFILE' > "$WORK_TREE/Dockerfile"
 ARG NODE_IMAGE=deploy-node:20-alpine
 ARG NGINX_IMAGE=deploy-nginx:alpine
 FROM ${NODE_IMAGE} AS builder
@@ -87,10 +95,11 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/app/.astro,id=astro-__PAGE_HASH__ \
     env CI=1 PAGE_HASH=__PAGE_HASH__ pnpm run build
 RUN test -d dist || (echo "ERROR: dist not found" && exit 1)
+RUN if [ -n "__CUSTOM_DOMAIN__" ]; then test -f dist/sitemap.xml || test -f dist/sitemap-index.xml || (echo "Sitemap not generated. Add site + integrations: [sitemap()] in astro config." && ls -la dist/ && exit 1); fi
 
 FROM ${NGINX_IMAGE}
 COPY --from=builder /app/dist /usr/share/nginx/html
-RUN echo 'server { listen 8000; root /usr/share/nginx/html; index index.html; location / { try_files $uri $uri/ /index.html; } gzip on; }' > /etc/nginx/conf.d/default.conf
+RUN echo 'server { listen 8000; root /usr/share/nginx/html; index index.html; location = /sitemap.xml { default_type application/xml; try_files /sitemap-index.xml /sitemap.xml =404; } location / { try_files $uri $uri/ /index.html; } gzip on; }' > /etc/nginx/conf.d/default.conf
 EXPOSE 8000
 CMD ["nginx", "-g", "daemon off;"]
 DOCKERFILE
@@ -105,11 +114,19 @@ dist
 .env
 DOCKERIGNORE
 
-    # Base path: при кастомном домене (файл domain) — base: '/', иначе превью по /{hash}/ — base: '/{hash}/'
-    SITE_BASE="/${PAGE_HASH}/"
-    if [[ -f "$WORK_TREE/domain" ]]; then
-      CUSTOM_DOMAIN_LINE=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
-      [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
+    # SEO: при кастомном домене добавляем @astrojs/sitemap в зависимости (если ещё нет)
+    # Важно: патчим и package.cache.json, и package.json — в образе COPY . . перезаписывает файлы, pnpm install читает package.json
+    if [[ -n "$CUSTOM_DOMAIN_LINE" ]] && command -v jq >/dev/null 2>&1; then
+      SITEMAP_ADDED=false
+      for pkg in "$WORK_TREE/package.cache.json" "$WORK_TREE/package.json"; do
+        [[ -f "$pkg" ]] || continue
+        if ! jq -e '.dependencies["@astrojs/sitemap"]' "$pkg" >/dev/null 2>&1; then
+          jq '.dependencies["@astrojs/sitemap"] = "^3.0.0"' "$pkg" > "${pkg}.tmp" && mv "${pkg}.tmp" "$pkg"
+          log "Добавлена зависимость @astrojs/sitemap для SEO в $(basename "$pkg")"
+          SITEMAP_ADDED=true
+        fi
+      done
+      [[ "$SITEMAP_ADDED" == true ]] && rm -f "$WORK_TREE/pnpm-lock.yaml" 2>/dev/null && log "Lockfile сброшен для установки @astrojs/sitemap в образе"
     fi
     # Генерируем astro.config.mjs с правильным base path
     log "Генерация astro.config.mjs с base: '${SITE_BASE}'"
@@ -133,23 +150,93 @@ DOCKERIGNORE
         awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       fi
       rm -f "$WORK_TREE/astro.config.mjs.orig" "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
+      # SEO: при кастомном домене добавляем site и sitemap в существующий конфиг (если ещё нет)
+      if [[ -n "$CUSTOM_DOMAIN_LINE" ]]; then
+        grep -q "from '@astrojs/sitemap'" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+          sed -i.bak "1a import sitemap from '@astrojs/sitemap';" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+          sed -i '' "1a\\
+import sitemap from '@astrojs/sitemap';
+" "$WORK_TREE/astro.config.mjs" 2>/dev/null || true
+        grep -q "site:" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+          sed -i.bak "s|base:.*|&\n  site: 'https://${CUSTOM_DOMAIN_LINE}/',|" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+          awk -v d="${CUSTOM_DOMAIN_LINE}" '/base:/ {print; print "  site: '\''https://" d "/'\'',"; next} {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs" 2>/dev/null || true
+        # integrations: добавляем sitemap() — одна строка (integrations: [) или перенос (integrations:\n  [)
+        if ! grep -q "sitemap()" "$WORK_TREE/astro.config.mjs" 2>/dev/null; then
+          if grep -q "integrations:" "$WORK_TREE/astro.config.mjs" 2>/dev/null; then
+            # Одна строка: integrations: [ или integrations:[
+            sed -i.bak 's|integrations:[[:space:]]*\[|integrations: [sitemap(), |' "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+            sed -i '' 's|integrations:[[:space:]]*\[|integrations: [sitemap(), |' "$WORK_TREE/astro.config.mjs" 2>/dev/null || true
+            # Многострочный вариант: integrations: и на следующей строке [
+            if ! grep -q "sitemap()" "$WORK_TREE/astro.config.mjs" 2>/dev/null; then
+              awk '/integrations:/ {f=1; print; next} f && /\[/ { sub(/\[/, "[sitemap(), "); f=0 } {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs" 2>/dev/null || true
+            fi
+            grep -q "sitemap()" "$WORK_TREE/astro.config.mjs" 2>/dev/null && log "Добавлен sitemap() в integrations (astro.config.mjs)"
+          else
+            awk -v d="${CUSTOM_DOMAIN_LINE}" '/site:/ {print; print "  integrations: [sitemap()],"; next} {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+            awk '/base:/ {print; print "  integrations: [sitemap()],"; next} {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs" 2>/dev/null || true
+            log "Добавлена строка integrations: [sitemap()] в astro.config.mjs"
+          fi
+        fi
+        rm -f "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
+      fi
     elif [[ -f "$WORK_TREE/astro.config.ts" ]]; then
-      cp "$WORK_TREE/astro.config.ts" "$WORK_TREE/astro.config.mjs"
-      if grep -q "base:" "$WORK_TREE/astro.config.mjs"; then
-        sed -i.bak "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed -i '' "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        sed "s|base:.*|base: '${SITE_BASE}',|g" "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
+      # Патчим .ts на месте (не копируем в .mjs — иначе аннотации типов ломают загрузку)
+      ASTRO_CFG="$WORK_TREE/astro.config.ts"
+      cp "$ASTRO_CFG" "$ASTRO_CFG.orig"
+      if grep -q "base:" "$ASTRO_CFG"; then
+        sed -i.bak "s|base:.*|base: '${SITE_BASE}',|g" "$ASTRO_CFG" 2>/dev/null || \
+        sed -i '' "s|base:.*|base: '${SITE_BASE}',|g" "$ASTRO_CFG" 2>/dev/null || \
+        sed "s|base:.*|base: '${SITE_BASE}',|g" "$ASTRO_CFG.orig" > "$ASTRO_CFG"
       else
         sed -i.bak "/defineConfig({/a\\
-	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+	base: '${SITE_BASE}'," "$ASTRO_CFG" 2>/dev/null || \
         sed -i '' "/defineConfig({/a\\
-	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs" > "$WORK_TREE/astro.config.mjs.tmp" && mv "$WORK_TREE/astro.config.mjs.tmp" "$WORK_TREE/astro.config.mjs"
+	base: '${SITE_BASE}'," "$ASTRO_CFG" 2>/dev/null || \
+        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$ASTRO_CFG.orig" > "$ASTRO_CFG"
       fi
-      rm -f "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
+      rm -f "$ASTRO_CFG.orig" "$ASTRO_CFG.bak" 2>/dev/null || true
+      if [[ -n "$CUSTOM_DOMAIN_LINE" ]]; then
+        grep -q "from '@astrojs/sitemap'" "$ASTRO_CFG" 2>/dev/null || \
+          sed -i.bak "1a import sitemap from '@astrojs/sitemap';" "$ASTRO_CFG" 2>/dev/null || \
+          sed -i '' "1a\\
+import sitemap from '@astrojs/sitemap';
+" "$ASTRO_CFG" 2>/dev/null || true
+        grep -q "site:" "$ASTRO_CFG" 2>/dev/null || \
+          awk -v d="${CUSTOM_DOMAIN_LINE}" '/base:/ {print; print "  site: '\''https://" d "/'\'',"; next} {print}' "$ASTRO_CFG" > "$ASTRO_CFG.tmp" && mv "$ASTRO_CFG.tmp" "$ASTRO_CFG" 2>/dev/null || true
+        if ! grep -q "sitemap()" "$ASTRO_CFG" 2>/dev/null; then
+          if grep -q "integrations:" "$ASTRO_CFG" 2>/dev/null; then
+            sed -i.bak 's|integrations:[[:space:]]*\[|integrations: [sitemap(), |' "$ASTRO_CFG" 2>/dev/null || \
+            sed -i '' 's|integrations:[[:space:]]*\[|integrations: [sitemap(), |' "$ASTRO_CFG" 2>/dev/null || true
+            grep -q "sitemap()" "$ASTRO_CFG" 2>/dev/null || \
+              awk '/integrations:/ {f=1; print; next} f && /\[/ { sub(/\[/, "[sitemap(), "); f=0 } {print}' "$ASTRO_CFG" > "$ASTRO_CFG.tmp" && mv "$ASTRO_CFG.tmp" "$ASTRO_CFG" 2>/dev/null || true
+          else
+            awk '/site:/ {print; print "  integrations: [sitemap()],"; next} {print}' "$ASTRO_CFG" > "$ASTRO_CFG.tmp" && mv "$ASTRO_CFG.tmp" "$ASTRO_CFG" 2>/dev/null || \
+            awk '/base:/ {print; print "  integrations: [sitemap()],"; next} {print}' "$ASTRO_CFG" > "$ASTRO_CFG.tmp" && mv "$ASTRO_CFG.tmp" "$ASTRO_CFG" 2>/dev/null || true
+          fi
+          grep -q "sitemap()" "$ASTRO_CFG" 2>/dev/null && log "Добавлен sitemap() в integrations (astro.config.ts)"
+        fi
+        rm -f "$ASTRO_CFG.bak" 2>/dev/null || true
+      fi
     else
       # Если конфига нет, создаём базовый (base уже выбран выше по файлу domain)
-      sed "s|__SITE_BASE__|$SITE_BASE|g" << 'ASTROCONFIG' > "$WORK_TREE/astro.config.mjs"
+      if [[ -n "$CUSTOM_DOMAIN_LINE" ]]; then
+        sed -e "s|__SITE_BASE__|$SITE_BASE|g" -e "s|__SITE_URL__|https://${CUSTOM_DOMAIN_LINE}/|g" << 'ASTROCONFIG' > "$WORK_TREE/astro.config.mjs"
+// @ts-check
+import { defineConfig } from 'astro/config';
+import sitemap from '@astrojs/sitemap';
+
+// Автоматически сгенерировано при деплое (с sitemap для SEO)
+export default defineConfig({
+  base: '__SITE_BASE__',
+  site: '__SITE_URL__',
+  integrations: [sitemap()],
+  output: 'static',
+  trailingSlash: 'never',
+  compressHTML: true
+});
+ASTROCONFIG
+      else
+        sed "s|__SITE_BASE__|$SITE_BASE|g" << 'ASTROCONFIG' > "$WORK_TREE/astro.config.mjs"
 // @ts-check
 import { defineConfig } from 'astro/config';
 
@@ -161,6 +248,7 @@ export default defineConfig({
   compressHTML: true
 });
 ASTROCONFIG
+      fi
     fi
 
     # Очередь Redis (воркер ограничен 2 одновременными деплоями)
@@ -175,9 +263,9 @@ ASTROCONFIG
       log "Добавлено в очередь (deploy_id: ${DEPLOY_ID}), ожидание завершения деплоя..."
       
       # Ждём результат через BLPOP (блокирующее ожидание)
-      # Используем уникальный ключ с deploy_id, чтобы каждый push ждал свой результат
-      RESULT=$(timeout "$DEPLOY_TIMEOUT" redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" \
-        BLPOP "${REDIS_RESULT_KEY}" "$DEPLOY_TIMEOUT" 2>/dev/null | tail -1 || echo "timeout")
+      # При ошибке сборки воркер пушит одно значение: "failed\n" + вывод сборки (без отдельного ключа)
+      RESULT=$(timeout "$DEPLOY_TIMEOUT" redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --raw \
+        BLPOP "${REDIS_RESULT_KEY}" "$DEPLOY_TIMEOUT" 2>/dev/null | tail -n +2 || echo "timeout")
       
       if [[ "$RESULT" == "ok" ]]; then
         if [[ -n "${CUSTOM_DOMAIN_LINE:-}" ]]; then
@@ -189,7 +277,12 @@ ASTROCONFIG
         echo "DEPLOY_URL:${DEPLOY_URL}" >&2
       elif [[ "$RESULT" == "failed" ]]; then
         log "Ошибка деплоя"
-        echo "ERROR: Деплой завершился с ошибкой. Проверьте логи на сервере: /var/log/deploy/deploy.log и /var/log/deploy/worker-*.log" >&2
+        echo "ERROR: Деплой завершился с ошибкой." >&2
+        exit 1
+      elif [[ "$RESULT" == "failed"* ]]; then
+        log "Ошибка деплоя"
+        echo "ERROR: Деплой завершился с ошибкой." >&2
+        printf '%s' "${RESULT#failed$'\n'}" >&2
         exit 1
       else
         log "Таймаут ожидания деплоя (возможно, деплой ещё выполняется)"

@@ -124,3 +124,68 @@ domain          # содержимое: mysite.example.com  или пусто
 **Уже настроенный сервер (без этого апдейта):** в конец `/etc/nginx/sites-available/deploy_main` добавить строку  
 `include /etc/nginx/sites-available/deploy/custom/*.conf;`  
 и выполнить `mkdir -p /etc/nginx/sites-available/deploy/custom`.
+
+---
+
+## SEO для кастомного домена
+
+После успешного деплоя с кастомным доменом скрипт **deploy_single.sh** автоматически уведомляет поисковики:
+
+- **Google, Bing:** пинг sitemap — запросы к `https://www.google.com/ping?sitemap=<url>` и `https://www.bing.com/ping?sitemap=<url>`. Пингуются пути `sitemap.xml` и `sitemap-index.xml` (подходит для Astro с @astrojs/sitemap).
+- **Yandex:** протокол **IndexNow** — запрос к `https://yandex.com/indexnow?url=...&key=...&keyLocation=...`. Ключ при первом деплое генерируется и сохраняется в `/opt/deploy/indexnow-keys/<домен>`, по адресу `https://<домен>/indexnow-key.txt` его отдаёт nginx (location в конфиге кастомного домена). Уведомление отправляется при каждом деплое; при удалении сайта ключ удаляется.
+
+**Что сделать в проекте сайта (репо):**
+
+1. **Sitemap:** подключить генерацию sitemap (например, для Astro — [@astrojs/sitemap](https://docs.astro.build/en/guides/integrations-guide/sitemap/)), чтобы при сборке появлялись `sitemap.xml` и/или `sitemap-index.xml` в `dist/`.
+2. **robots.txt (по желанию):** в корне выдачи добавить `Sitemap: https://<кастомный_домен>/sitemap.xml` (или sitemap-index.xml).
+
+**Яндекс:** пинг sitemap у Яндекса недоступен; используется **IndexNow** (см. выше) — ключ и отдача по `/indexnow-key.txt` настраиваются деплоем автоматически. Дополнительно можно добавить сайт в [Яндекс.Вебмастер](https://webmaster.yandex.ru/) и указать sitemap.
+
+---
+
+## SEO с аккаунтами Google и Yandex
+
+Если есть аккаунты в **Google Search Console** и **Яндекс.Вебмастер**, можно усилить индексацию через официальные API (в дополнение к пингу и IndexNow).
+
+### Google Search Console API
+
+- **Что даёт:** явная отправка sitemap в свойство сайта (как «добавить sitemap» в интерфейсе), плюс при желании — [проверка URL](https://developers.google.com/webmaster-tools/v1/urlInspection.index/inspect).
+- **Как:** сервисный аккаунт в Google Cloud:
+  1. В [Google Cloud Console](https://console.cloud.google.com/) создать сервисный аккаунт, выдать ключ (JSON).
+  2. В [Search Console](https://search.google.com/search-console) добавить свойство для каждого кастомного домена (URL-prefix, например `https://example.com/`).
+  3. В настройках свойства (Пользователи и права) добавить **email сервисного аккаунта** с правом «Владелец» или «Полный доступ».
+  4. На сервере задать путь к JSON-ключу, например в юнитах воркеров:  
+     `Environment="GOOGLE_APPLICATION_CREDENTIALS=/opt/deploy/seo/google-sa.json"`  
+     (файл должен быть доступен процессу воркера).
+- **API:** `PUT https://www.googleapis.com/webmasters/v3/sites/{siteUrl}/sitemaps/{feedpath}`  
+  Требуется OAuth2 с областью `https://www.googleapis.com/auth/webmasters`.  
+  `siteUrl` и `feedpath` — в URL-кодированном виде (например, `https%3A%2F%2Fexample.com%2F` и `https%3A%2F%2Fexample.com%2Fsitemap.xml`).
+
+**Два режима в деплое:**
+
+1. **OAuth пользователя** (сайт привязывается к твоему Google-аккаунту): задай `GOOGLE_OAUTH_CREDENTIALS` (путь к JSON с `client_id`, `client_secret`, `refresh_token`) или переменные `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`. Один раз получи refresh_token локально: `python3 get_google_oauth_token.py` (см. пошаговую настройку ниже). При деплое **deploy_single.sh** вызывает `seo_submit_google.py`: добавление свойства в GSC (PUT sites), получение токена верификации (файл), создание файла в `/opt/deploy/google_verification/<домен>/`, добавление location в nginx, вызов Site Verification API insert, отправка sitemap.
+2. **Сервисный аккаунт** (только sitemap; свойство должно быть добавлено вручную в GSC): задай `GOOGLE_APPLICATION_CREDENTIALS` (путь к JSON-ключу). Нужен пакет: `pip install google-auth`. Скрипт: `scripts/server_setup/seo_submit_google.py`.
+
+**Как настроить Google Cloud Console для OAuth пользователя (один раз):**
+
+1. Открой [Google Cloud Console](https://console.cloud.google.com/), выбери проект (или создай новый).
+2. **Включи API:** слева **APIs & Services** → **Library**. Найди и включи:
+   - **Google Search Console API** → Enable;
+   - **Google Site Verification API** → Enable.
+3. **OAuth consent screen:** **APIs & Services** → **OAuth consent screen**. Выбери тип **External** (если не корпоративный аккаунт), заполни название приложения и email поддержки, сохрани. В разделе **Scopes** можно ничего не добавлять — скрипт запрашивает scope при авторизации.
+4. **Создай OAuth 2.0 Client ID:** **APIs & Services** → **Credentials** → **Create Credentials** → **OAuth client ID**.  
+   - Application type: **Desktop app**.  
+   - Name: любое (например `Deploy GSC`).  
+   - Нажми **Create**. В списке появятся **Client ID** и **Client secret** — скопируй их (они понадобятся для `get_google_oauth_token.py`).
+5. **Redirect URI для Desktop app:** у типа «Desktop app» Google по умолчанию разрешает `http://localhost` и `http://localhost:PORT`. Скрипт `get_google_oauth_token.py` слушает `http://localhost:8080/`. Для **Desktop app** дополнительно указывать redirect URI в консоли не обязательно — localhost уже допустим. Если создал клиента типа **Web application**, зайди в созданный клиент (Credentials → клик по имени) → в **Authorized redirect URIs** добавь `http://localhost:8080/` и сохрани.
+6. Локально запусти:  
+   `GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... python3 scripts/server_setup/get_google_oauth_token.py`  
+   Открой в браузере выведенный URL, войди в свой Google-аккаунт, подтверди доступ. После редиректа скрипт получит код и выведет (или сохранит в файл) `refresh_token`. Положи креды на сервер в `/opt/deploy/seo/google_oauth.json` и задай в воркерах `Environment="GOOGLE_OAUTH_CREDENTIALS=/opt/deploy/seo/google_oauth.json"`.
+
+### Yandex Webmaster API
+
+- **Что даёт:** программное добавление сайта, отправка sitemap, статистика индексации.
+- **Как:** приложение в [OAuth Яндекса](https://oauth.yandex.com/), получение `client_id`; пользователь один раз авторизуется — приложение получает `access_token` и `refresh_token`. Дальше запросы к `https://api.webmaster.yandex.net/v4/` от имени пользователя (user_id из `/v4/user`).
+- **Ограничение:** только OAuth пользователя (нет сервисных аккаунтов), поэтому нужно хранить и обновлять токен (refresh_token → access_token). Интеграция в деплой возможна, но сложнее, чем у Google.
+
+**Практика:** для автоматического деплоя обычно достаточно пинга (Google/Bing) и IndexNow (Yandex). Подключение GSC API имеет смысл, если хочешь гарантированно «добавить sitemap» в свойство после каждого деплоя; Yandex API — если нужна автоматизация добавления сайта и sitemap в Вебмастер без ручного ввода.

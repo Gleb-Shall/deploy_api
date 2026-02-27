@@ -39,6 +39,10 @@ containers/
 
 # Секретные файлы (содержат ключи и токены)
 example.json
+google_oauth.json
+*-sa.json
+yandex_webmaster.json
+*7.json
 
 # SSH ключи (не коммитить!)
 keys_for_servers/

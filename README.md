@@ -5,22 +5,23 @@
 ## Структура проекта
 
 ```
-├── example.json
-├── example.json.example
-├── domain_api/                   # Опционально: API проверки/покупки доменов (Beget), не влияет на деплой
+├── domain_api/                   # Опционально: API проверки доменов (Beget)
+├── local_develope/                # Локальные скрипты: деплой на сервер, domain_api, ключи
+│   ├── deploy_to_server.sh      # Копирует скрипты в /opt/deploy_api/scripts/, перезапускает воркеры
+│   └── deploy_domain_api.sh     # Деплой domain_api на сервер
 ├── scripts/
-│   ├── parse_json_to_folder.py   # JSON → папка проекта (локально)
-│   ├── stress_deploy.sh          # Стресс-тест: параллельный push N сайтов
 │   └── server_setup/
-│       ├── setup_fresh_server.sh # Первичная настройка сервера
-│       ├── post-receive.template # Хук: checkout → очередь → deploy
-│       ├── git_wrap.sh           # Обёртка для push: создаёт репо, ставит post-receive
-│       ├── deploy_single.sh      # Деплой одного сайта (вызывается воркером)
-│       ├── deploy_worker.sh      # Воркер очереди Redis
-│       ├── remove_site.sh        # Удаление сайта (-A = удалить все)
-│       ├── PATHS.md              # Пути на сервере
+│       ├── setup_fresh_server.sh  # Первичная настройка сервера (один раз)
+│       ├── post-receive.template  # Хук: checkout → очередь → deploy (копируется как post-receive)
+│       ├── git_wrap.sh            # Обёртка для push: создаёт репо, ставит post-receive
+│       ├── deploy_single.sh       # Деплой одного сайта (вызывается воркером)
+│       ├── deploy_worker.sh       # Воркер очереди Redis
+│       ├── remove_site.sh         # Удаление сайта (-A = удалить все)
+│       ├── seo_submit_google.py   # Опционально: GSC — сайт в твоём аккаунте + верификация + sitemap (OAuth) или только sitemap (сервисный аккаунт)
+│       ├── install_deploy_workers.sh
+│       ├── PATHS.md
 │       └── README.md
-└── parsed_project/               # Выход parse_json (в .gitignore)
+└── ...
 ```
 
 ## Быстрый старт
@@ -48,7 +49,13 @@ git remote add origin git@СЕРВЕР:sites/ХЭШ.git
 git push -u origin main
 ```
 
-При первом push git_wrap создаёт bare-репо, ставит post-receive. Push попадает в очередь Redis, воркер собирает Docker и настраивает nginx. Сайт: `https://DOMAIN/ХЭШ/`.
+При первом push git_wrap создаёт bare-репо, ставит post-receive. Push попадает в очередь Redis, воркер собирает Docker и настраивает nginx. Сайт: `https://DOMAIN/ХЭШ/`. Кастомный домен: в корне репо файл `domain` (одна строка — домен), A-запись на сервер → при деплое SSL и SEO (пинг Google/Bing, IndexNow для Яндекса, при желании sitemap в конфиге Astro). Чтобы сайт появился в **твоём** Google Search Console: один раз получи refresh_token через `get_google_oauth_token.py`, положи креды в `GOOGLE_OAUTH_CREDENTIALS` на сервере — при деплое сайт добавится в аккаунт, пройдёт верификацию и отправится sitemap.
+
+**Обновление скриптов на сервере** (после изменений в репо):
+```bash
+./local_develope/deploy_to_server.sh
+```
+Копирует все скрипты в `/opt/deploy_api/scripts/`, systemd units, перезапускает воркеры. Сервер: `DEPLOY_SERVER` (по умолчанию `root@45.90.35.151`).
 
 ## Архитектура
 
@@ -61,32 +68,24 @@ git push -u origin main
 
 ---
 
-## Domain API — проверка и покупка доменов (.ru, Beget)
+## Domain API — проверка доменов (.ru, Beget)
 
-Отдельный микросервис в `domain_api/`: проверка доступности домена и покупка через Beget. Не связан с деплоем сайтов — свой порт, свой `.env`, можно не ставить.
+Отдельный микросервис в `domain_api/`: проверка доступности и цены домена через Beget. Не связан с деплоем сайтов — свой порт, свой `.env`, можно не ставить.
 
 | Возможность | Описание |
 |-------------|----------|
-| **Проверка** | Реальная цена и доступность домена (в т.ч. премиум), только зона .ru |
-| **Покупка** | Регистрация домена, списание с баланса Beget, контакты из аккаунта |
-| **DNS** | После покупки можно автоматически выставить A-запись на твой IP и дождаться применения |
+| **Проверка** | Реальная цена и доступность домена (в т.ч. премиум), зона .ru |
 
-### Эндпоинты
+### Эндпоинт
 
 ```bash
-# Проверка домена (нужен X-API-Key, если задан в .env)
+# Проверка домена (X-API-Key опционален, если задан в .env)
 curl -X POST http://127.0.0.1:5000/api/domain/check \
   -H "Content-Type: application/json" \
   -d '{"domain": "example.ru", "period": 1}'
-
-# Покупка (опционально api_ip — после покупки выставится A-запись и ответ придёт после применения DNS)
-curl -X POST http://127.0.0.1:5000/api/domain/purchase \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: YOUR_KEY" \
-  -d '{"domain": "example.ru", "period": 1, "api_ip": "1.2.3.4"}'
 ```
 
-Ответ проверки: `available`, `can_purchase`, `price`, `balance`. Ответ покупки: `domain`, `service_id`, `dns_propagated` (true, когда запись уже видна в DNS).
+Ответ: `available`, `can_purchase`, `price`, `balance`.
 
 ### Доступ с другого сервера (чат-бот и т.п.)
 
@@ -103,7 +102,7 @@ ssh -i ~/.ssh/domain_api_tunnel -N -L 5000:127.0.0.1:5000 root@СЕРВЕР_С_A
 - **Локально:** `cd domain_api && cp .env.example .env`, заполнить `BEGET_LOGIN`, `BEGET_PASSWORD`, затем `pip install -r requirements.txt` и `python api.py`.
 - **На сервере:** из корня проекта `./local_develope/deploy_domain_api.sh`, затем создать `.env` на сервере в `/opt/deploy_api/domain_api/`.
 
-Подробнее: **`domain_api/README.md`**, **`domain_api/SETUP.md`**.
+Подробнее: **`domain_api/README.md`**.
 
 ---
 

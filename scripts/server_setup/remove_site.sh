@@ -158,6 +158,11 @@ if [[ -n "$CUSTOM_DOMAIN" ]] && [[ -f "${NGINX_CUSTOM_DIR}/${CUSTOM_DOMAIN}.conf
   echo "  Nginx конфиг кастомного домена (${CUSTOM_DOMAIN}) удалён"
   NGINX_CHANGED=true
 fi
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+  [[ -f "/opt/deploy/indexnow-keys/${CUSTOM_DOMAIN}" ]] && rm -f "/opt/deploy/indexnow-keys/${CUSTOM_DOMAIN}" && echo "  Ключ IndexNow (Yandex) для ${CUSTOM_DOMAIN} удалён"
+  [[ -d "/opt/deploy/yandex_verification/${CUSTOM_DOMAIN}" ]] && rm -rf "/opt/deploy/yandex_verification/${CUSTOM_DOMAIN}" && echo "  Каталог верификации Яндекс.Вебмастер для ${CUSTOM_DOMAIN} удалён"
+  [[ -d "/opt/deploy/google_verification/${CUSTOM_DOMAIN}" ]] && rm -rf "/opt/deploy/google_verification/${CUSTOM_DOMAIN}" && echo "  Каталог верификации Google для ${CUSTOM_DOMAIN} удалён"
+fi
 if [[ -f "$CONFIG_FILE" ]]; then
   rm "$CONFIG_FILE"
   echo "  Nginx конфиг (превью) удалён"

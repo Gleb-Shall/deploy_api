@@ -10,7 +10,7 @@ Push в несуществующий репо → создаётся репо, �
 ```bash
 ./local_develope/deploy_to_server.sh
 ```
-Копирует все скрипты в `/opt/deploy_api/scripts/`, systemd units, перезапускает воркеры. Сервер по умолчанию: `root@45.90.35.151` (переменная `DEPLOY_SERVER`).
+Копирует в `/opt/deploy_api/scripts/`: `deploy_single.sh`, `deploy_worker.sh`, `install_deploy_workers.sh`, `remove_site.sh`, `git_wrap.sh`, `post-receive.template` → `post-receive`, `check_deploy_status.sh`, `manage_ports_queue.sh`, `docker_pull_images.sh`, `seo_submit_google.py`, `seo_submit_yandex.py`; при наличии — `deploy_history.sh`, `diagnose_docker.sh`, `get_yandex_oauth_token.py`, `get_google_oauth_token.py`. Также копирует systemd units для docker_pull_images, делает `daemon-reload`, перезапускает воркеры. Сервер: `DEPLOY_SERVER` (по умолчанию `root@45.90.35.151`).
 
 **Только воркеры (пересоздать юниты, добавить CERTBOT_EMAIL):** на сервере после копирования скриптов можно выполнить:
 ```bash
@@ -43,7 +43,7 @@ sudo DOMAIN=example.com bash scripts/server_setup/setup_fresh_server.sh
 # или с email для Let's Encrypt (основной + кастомные домены):
 sudo CERTBOT_EMAIL=admin@example.com DOMAIN=example.com bash scripts/server_setup/setup_fresh_server.sh
 ```
-Setup установит: пакеты, git (shell=/bin/bash), Redis, Docker, nginx, SSL, воркеры, базовые образы. Сайты: `https://DOMAIN/{hash}/`. Кастомные домены: файл `domain` в корне репо, A-запись на сервер → certbot при деплое.
+Setup установит: пакеты, git (shell=/bin/bash), Redis, Docker, nginx, SSL, воркеры, базовые образы. Сайты: `https://DOMAIN/{hash}/`. Кастомные домены: файл `domain` в корне репо, A-запись на сервер → при деплое certbot, nginx для домена, SEO (пинг sitemap Google/Bing, IndexNow для Яндекса; при кастомном домене post-receive может добавить @astrojs/sitemap и конфиг в проект).
 
 3. Добавь SSH-ключ (локально): `./local_develope/add_git_key.sh root@СЕРВЕР`
 

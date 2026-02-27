@@ -61,14 +61,25 @@ trap 'notify_deploy_done "failed"' ERR
 
 [[ -d "$WORK_TREE" ]] || { log "Work tree не найден"; exit 1; }
 
-# Docker build (default builder — один общий кэш pnpm/Astro для всех воркеров)
-# deploy-node/deploy-nginx — локальные образы (docker_pull_images)
+# Docker build: при ошибке весь вывод (stdout+stderr) пишем в Redis — post-receive отдаёт в ответ на push
+# docker build может писать ошибки в stdout или stderr в зависимости от версии/драйвера, поэтому захватываем оба
 log "Сборка образа..."
-if ! docker build -t "$IMAGE_NAME" "$WORK_TREE"; then
+tmpout="${WORK_TREE}/.build_out.$$"
+docker build -t "$IMAGE_NAME" "$WORK_TREE" 2>&1 | tee "$tmpout"
+build_rc=${PIPESTATUS[0]}
+if [[ $build_rc -ne 0 ]]; then
   log "Ошибка сборки Docker"
-  notify_deploy_done "failed"
+  if [[ -s "$tmpout" ]]; then
+    # Один пуш в ключ результата: "failed\n" + вывод сборки — post-receive по BLPOP получит и выведет тело
+    ( printf 'failed\n'; cat "$tmpout" ) | redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -x LPUSH "$REDIS_RESULT_KEY" >/dev/null 2>&1 || true
+    cat "$tmpout" >&2
+  else
+    notify_deploy_done "failed"
+  fi
+  rm -f "$tmpout"
   exit 1
 fi
+rm -f "$tmpout"
 
 # Функция возврата порта в очередь при освобождении
 # Определяет правильный файл (чётный/нечётный) автоматически
@@ -215,7 +226,40 @@ if [[ -n "$CUSTOM_DOMAIN" ]]; then
       sed -i '' "s|proxy_pass http://127.0.0.1:[0-9]*/|proxy_pass http://127.0.0.1:${PORT}/|g" "$CUSTOM_CONF" 2>/dev/null || true
     rm -f "${CUSTOM_CONF}.bak" 2>/dev/null || true
     log "Обновлён порт в конфиге кастомного домена: ${PORT}"
+    # IndexNow: если ключа ещё нет (конфиг создан до появления этой фичи) — создаём ключ и добавляем location
+    INDEXNOW_DIR="/opt/deploy/indexnow-keys"
+    INDEXNOW_KEY_FILE="${INDEXNOW_DIR}/${CUSTOM_DOMAIN}"
+    if [[ ! -s "$INDEXNOW_KEY_FILE" ]]; then
+      mkdir -p "$INDEXNOW_DIR"
+      INDEXNOW_KEY=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null)
+      if [[ -n "$INDEXNOW_KEY" ]]; then
+        echo -n "$INDEXNOW_KEY" > "$INDEXNOW_KEY_FILE" && chmod 644 "$INDEXNOW_KEY_FILE"
+        if ! grep -q "location = /indexnow-key.txt" "$CUSTOM_CONF" 2>/dev/null; then
+          awk -v keyfile="$INDEXNOW_KEY_FILE" '
+            /^[[:space:]]*location \/ \{/ && !done {
+              print "    location = /indexnow-key.txt {"
+              print "        alias " keyfile ";"
+              print "        default_type text/plain;"
+              print "    }"
+              print ""
+              done=1
+            }
+            { print }
+          ' "$CUSTOM_CONF" > "${CUSTOM_CONF}.tmp" && mv "${CUSTOM_CONF}.tmp" "$CUSTOM_CONF"
+          nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+          log "Добавлен ключ IndexNow (Yandex) и location в конфиг"
+        fi
+      fi
+    fi
   else
+    # Ключ для Yandex IndexNow: один раз создаём, отдаём по /indexnow-key.txt
+    INDEXNOW_DIR="/opt/deploy/indexnow-keys"
+    INDEXNOW_KEY_FILE="${INDEXNOW_DIR}/${CUSTOM_DOMAIN}"
+    mkdir -p "$INDEXNOW_DIR"
+    if [[ ! -s "$INDEXNOW_KEY_FILE" ]]; then
+      INDEXNOW_KEY=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null)
+      [[ -n "$INDEXNOW_KEY" ]] && echo -n "$INDEXNOW_KEY" > "$INDEXNOW_KEY_FILE" && chmod 644 "$INDEXNOW_KEY_FILE"
+    fi
     # Первый деплой: пишем server-блок (listen 80), потом certbot добавит 443
     cat > "$CUSTOM_CONF" << NGINXEOF
 # Кастомный домен для ${PAGE_HASH} (превью на основном домене отключена)
@@ -226,6 +270,11 @@ server {
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
+    }
+
+    location = /indexnow-key.txt {
+        alias ${INDEXNOW_KEY_FILE};
+        default_type text/plain;
     }
 
     location / {
@@ -262,6 +311,59 @@ NGINXEOF
     mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
   fi
   log "Сайт доступен по https://${CUSTOM_DOMAIN}/ (превью по /${PAGE_HASH}/ отключено)"
+  # SEO: уведомление поисковиков об обновлении sitemap (Google, Bing) и IndexNow (Yandex)
+  if command -v curl >/dev/null 2>&1; then
+    for sitemap_path in sitemap.xml sitemap-index.xml; do
+      SITEMAP_URL="https://${CUSTOM_DOMAIN}/${sitemap_path}"
+      ENCODED=$(SITEMAP_URL="$SITEMAP_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['SITEMAP_URL'], safe=''))" 2>/dev/null)
+      [[ -z "$ENCODED" ]] && continue
+      curl -sS -o /dev/null -m 10 "https://www.google.com/ping?sitemap=$ENCODED" 2>/dev/null && log "Google: уведомление о sitemap отправлено ($sitemap_path)" || true
+      curl -sS -o /dev/null -m 10 "https://www.bing.com/ping?sitemap=$ENCODED" 2>/dev/null && log "Bing: уведомление о sitemap отправлено ($sitemap_path)" || true
+    done
+    # Yandex IndexNow: уведомление об URL (ключ лежит в /indexnow-key.txt на сайте)
+    INDEXNOW_KEY_FILE="/opt/deploy/indexnow-keys/${CUSTOM_DOMAIN}"
+    if [[ -s "$INDEXNOW_KEY_FILE" ]]; then
+      INDEXNOW_KEY=$(cat "$INDEXNOW_KEY_FILE" 2>/dev/null)
+      HOMEPAGE_URL="https://${CUSTOM_DOMAIN}/"
+      KEYLOCATION_URL="https://${CUSTOM_DOMAIN}/indexnow-key.txt"
+      URL_ENC=$(HOMEPAGE_URL="$HOMEPAGE_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HOMEPAGE_URL'], safe=''))" 2>/dev/null)
+      KEYLOC_ENC=$(KEYLOCATION_URL="$KEYLOCATION_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['KEYLOCATION_URL'], safe=''))" 2>/dev/null)
+      if [[ -n "$INDEXNOW_KEY" && -n "$URL_ENC" ]]; then
+        INDEXNOW_Q="url=${URL_ENC}&key=${INDEXNOW_KEY}"
+        [[ -n "$KEYLOC_ENC" ]] && INDEXNOW_Q="${INDEXNOW_Q}&keyLocation=${KEYLOC_ENC}"
+        CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "https://yandex.com/indexnow?${INDEXNOW_Q}" 2>/dev/null)
+        if [[ "$CODE" == "200" || "$CODE" == "202" ]]; then
+          log "Yandex IndexNow: уведомление отправлено (HTTP $CODE)"
+        else
+          log "Yandex IndexNow: ответ HTTP $CODE (проверь доступность https://${CUSTOM_DOMAIN}/indexnow-key.txt)"
+        fi
+      fi
+    else
+      log "Yandex IndexNow: пропущено (ключ не найден; при первом деплое с новым конфигом создаётся автоматически)"
+    fi
+    # Опционально: Google Search Console — OAuth пользователя (добавить сайт в аккаунт + верификация + sitemap) или сервисный аккаунт (только sitemap)
+    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || -n "${GOOGLE_OAUTH_CREDENTIALS:-}" || -n "${GOOGLE_REFRESH_TOKEN:-}" ]] && [[ -f "$SCRIPT_DIR/seo_submit_google.py" ]]; then
+      GOOGLE_EXIT=0
+      python3 "$SCRIPT_DIR/seo_submit_google.py" "$CUSTOM_DOMAIN" || GOOGLE_EXIT=$?
+      if [[ "$GOOGLE_EXIT" -eq 0 ]]; then
+        log "Google Search Console: сайт добавлен в аккаунт, верификация и sitemap выполнены (или только sitemap при сервисном аккаунте)"
+      elif [[ "$GOOGLE_EXIT" -ne 0 ]]; then
+        log "Google Search Console API: ошибка (код $GOOGLE_EXIT)"
+      fi
+    fi
+    # Опционально: добавление сайта и sitemap в Яндекс.Вебмастер (OAuth)
+    if [[ -n "${YANDEX_REFRESH_TOKEN:-}" || -n "${YANDEX_WEBMASTER_CREDENTIALS:-}" ]] && [[ -f "$SCRIPT_DIR/seo_submit_yandex.py" ]]; then
+      YANDEX_EXIT=0
+      python3 "$SCRIPT_DIR/seo_submit_yandex.py" "$CUSTOM_DOMAIN" || YANDEX_EXIT=$?
+      if [[ "$YANDEX_EXIT" -eq 0 ]]; then
+        log "Яндекс.Вебмастер API: сайт/sitemap отправлен"
+      elif [[ "$YANDEX_EXIT" -eq 8 ]]; then
+        log "Яндекс.Вебмастер: API вернул «сайт не верифицирован» (см. stderr выше); если в интерфейсе уже верифицирован — проверь совпадение хоста (www/без www) или подожди синхронизацию API"
+      elif [[ "$YANDEX_EXIT" -ne 0 ]]; then
+        log "Яндекс.Вебмастер API: ошибка (код $YANDEX_EXIT)"
+      fi
+    fi
+  fi
 else
   # Обычный деплой: превью на основном домене по /{hash}/
   if [[ -n "$OLD_CUSTOM_DOMAIN" ]]; then
