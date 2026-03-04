@@ -32,6 +32,12 @@ API_KEY = (os.getenv('API_KEY') or '').strip()
 # Порог цены для предупреждения в ответе check (price_exceeds_limit, warning)
 MAX_DOMAIN_PRICE = int(os.getenv('MAX_DOMAIN_PRICE', '200'))
 
+# Медиа (картинки от чат-бота) — тот же порт 5000
+MEDIA_STORAGE_DIR = os.getenv('MEDIA_STORAGE_DIR', '/opt/deploy/media')
+MEDIA_MAX_UPLOAD_BYTES = int(os.getenv('MEDIA_MAX_UPLOAD_BYTES', '10485760'))  # 10 MB
+# Базовый URL для ссылки в ответе upload (без слэша в конце)
+MEDIA_PUBLIC_URL = (os.getenv('MEDIA_PUBLIC_URL') or 'https://media.automatoria.ru').rstrip('/')
+
 # Валидация
 if not BEGET_LOGIN or not BEGET_PASSWORD:
     raise ValueError(

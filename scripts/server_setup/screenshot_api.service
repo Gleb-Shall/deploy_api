@@ -1,0 +1,16 @@
+[Unit]
+Description=Screenshot API (Playwright screenshots, module generator)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/deploy_api/screenshot_api
+ExecStart=/usr/bin/python3 api.py
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
