@@ -31,7 +31,7 @@ wheels/
 *.swp
 *.swo
 *~
-local_develope/
+
 
 # Docker и контейнеры
 containers/
@@ -67,4 +67,4 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
-presentation/
+

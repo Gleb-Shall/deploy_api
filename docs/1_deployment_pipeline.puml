@@ -1,0 +1,61 @@
+@startuml
+
+skinparam activity {
+    BackgroundColor #E8F4F8
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam arrow {
+    Color #2E86AB
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+title Deployment Pipeline: Git Push to Production
+
+' ========================================
+' Deployment Flow
+' ========================================
+
+start
+
+:Developer:\ngit push origin main;
+
+:SSH Connection:\ngit@server;
+
+:git_wrap.sh:\nParse repository name\nCreate bare repo if needed\nSet up post-receive hook;
+
+:post-receive hook:\nCheckout code to work tree\nGenerate Dockerfile\nCreate package.cache.json\nAdd to Redis queue;
+
+:Redis Queue:\nRPUSH deploy_queue PAGE_HASH;
+
+:Deploy Worker:\nBLPOP deploy_queue (wait for job)\nGet PAGE_HASH from queue;
+
+:Docker Build:\nMulti-stage build\nInstall dependencies (cached)\nBuild Astro site (cached)\nCreate nginx image;
+
+:Container Management:\nStop old container\nRemove old container\nAssign port (from registry or calculate);
+
+:Registry Update:\nUpdate registry.json\ncontainer_port\ncontainer_name;
+
+:Docker Run:\nStart container on 127.0.0.1:PORT\nExpose port 8000 internally;
+
+:Nginx Config:\nCreate nginx config file\nConfigure proxy_pass to container;
+
+:Nginx Reload:\nnginx -t (test config)\nsystemctl reload nginx;
+
+:DNS Resolution:\nDomain to Server IP;
+
+:SSL/TLS:\nCertbot manages certificates\nHTTPS enabled;
+
+:Health Check:\nSite accessible\nhttps://DOMAIN/PAGE_HASH/;
+
+:Logging:\nWrite to deploy.log\nNotify via Redis;
+
+stop
+
+@enduml

@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "ecc-universal": "^1.0.0"
+  },
+  "scripts": {
+    "cursor:install": "bash -c 'bash ./node_modules/ecc-universal/install.sh --target cursor \"$@\" && bash ./docs/cursor-rules-to-mdc.sh' --"
+  }
+}

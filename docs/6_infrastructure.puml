@@ -1,0 +1,131 @@
+@startuml
+
+skinparam component {
+    BackgroundColor #E8F4F8
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam database {
+    BackgroundColor #E8F4F8
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam linetype ortho
+
+title Infrastructure: System Scripts and Components
+
+' ========================================
+' System Scripts
+' ========================================
+
+component "git_wrap.sh" as GitWrap
+component "post-receive\n(Git hook)" as PostReceive
+component "deploy_worker.sh\n(2 instances)" as DeployWorker
+component "deploy_single.sh" as DeploySingle
+component "docker_pull_images.sh" as DockerPull
+
+note right of GitWrap
+    Location: /opt/deploy_api/scripts/
+    Triggered by: SSH forced command
+    Creates bare repos
+    Sets up post-receive hook (symlink)
+end note
+
+note right of PostReceive
+    Location: /var/git/sites/{HASH}.git/hooks/
+    Triggered by: git push
+    Checkout code to work tree
+    Generate Dockerfile
+    Generate package.cache.json
+    Queue job in Redis
+end note
+
+note right of DeployWorker
+    Location: /opt/deploy_api/scripts/
+    Systemd: deploy-worker-1, deploy-worker-2
+    Reads from Redis queue (BLPOP)
+    Calls deploy_single.sh
+    Writes logs
+    Max 2 concurrent deploys
+end note
+
+note right of DeploySingle
+    Location: /opt/deploy_api/scripts/
+    Called by: deploy_worker.sh
+    Reads work tree and Dockerfile
+    Docker build (uses base images)
+    Manages containers (stop/rm/run)
+    Reads/writes registry
+    Creates nginx config
+    Reloads nginx
+end note
+
+note right of DockerPull
+    Location: /opt/deploy_api/scripts/
+    Systemd timer: Sunday 03:00
+    Pulls base images from registry
+    Tags as deploy-node/deploy-nginx
+    Independent from deploy flow
+end note
+
+' ========================================
+' System Components
+' ========================================
+
+database "Git Repos\n/var/git/sites/{HASH}.git" as GitRepos
+database "Work Trees\n/opt/deploy/{HASH}/" as WorkTrees
+database "Registry\n/opt/deploy/registry.json" as Registry
+database "Logs\n/var/log/deploy/" as Logs
+
+component "Redis\n127.0.0.1:6379" as Redis
+component "Docker Daemon\n/var/run/docker.sock" as Docker
+component "Nginx\n/etc/nginx/sites-available/deploy/" as Nginx
+
+database "Base Images\ndeploy-node:20-alpine\ndeploy-nginx:alpine" as BaseImages
+component "Docker Containers\ndeploy-{HASH}\n127.0.0.1:PORT" as Containers
+
+' ========================================
+' Script Flow and Interactions
+' ========================================
+
+' git_wrap flow
+GitWrap --> GitRepos : "creates\nbare repos"
+GitWrap --> PostReceive : "sets up hook\n(symlink)"
+
+' post-receive flow
+GitRepos --> PostReceive : "triggers\non git push"
+PostReceive --> WorkTrees : "checkout code\nwrites Dockerfile\nwrites package.cache.json"
+PostReceive --> Redis : "RPUSH\ndeploy_queue"
+PostReceive --> Registry : "reads (optional)"
+
+' deploy_worker flow
+Redis --> DeployWorker : "BLPOP\ndeploy_queue"
+DeployWorker --> DeploySingle : "calls with\nPAGE_HASH"
+DeployWorker --> Logs : "writes\ndeploy.log\nwrites worker.log"
+DeployWorker --> Redis : "LPUSH\ndeploy:notify"
+
+' deploy_single flow
+WorkTrees --> DeploySingle : "reads code\nreads Dockerfile"
+DeploySingle --> Registry : "reads port\nwrites mapping"
+BaseImages --> DeploySingle : "uses in\nFROM"
+DeploySingle --> Docker : "docker build\ndocker run\ndocker stop\ndocker rm"
+Docker --> Containers : "creates\nmanages"
+DeploySingle --> Nginx : "writes config\nsystemctl reload"
+DeploySingle --> Logs : "writes\ndeploy.log"
+
+' docker_pull_images flow (independent)
+DockerPull --> Docker : "docker pull\ndocker tag"
+DockerPull --> BaseImages : "updates"
+
+' Container to Nginx
+Containers --> Nginx : "proxy_pass\n127.0.0.1:PORT"
+
+@enduml

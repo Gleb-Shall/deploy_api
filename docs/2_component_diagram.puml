@@ -1,0 +1,161 @@
+@startuml
+!define RECTANGLE class
+
+skinparam component {
+    BackgroundColor #E8F4F8
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam package {
+    BackgroundColor #FFFFFF
+    BorderColor #2E86AB
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam linetype ortho
+
+title Component Architecture: Deployment System
+
+' ========================================
+' Components
+' ========================================
+
+package "Client" {
+    [Developer] as Dev
+    [Git Client] as Git
+}
+
+package "Server Infrastructure" {
+    [SSH Server] as SSH
+    [Git Bare Repos] as GitRepos
+    note right of GitRepos
+        /var/git/sites/{PAGE_HASH}.git
+        Bare repositories
+    end note
+    
+    [git_wrap.sh] as GitWrap
+    note right of GitWrap
+        Creates repos
+        Sets up hooks
+    end note
+    
+    [post-receive Hook] as Hook
+    note right of Hook
+        Checkout code
+        Generate Dockerfile
+        Queue job
+    end note
+}
+
+package "Queue System" {
+    [Redis] as Redis
+    note right of Redis
+        deploy_queue: List
+        deploy:notify: List
+        Stores PAGE_HASH jobs
+    end note
+    
+    [Deploy Worker 1] as Worker1
+    [Deploy Worker 2] as Worker2
+    note right of Worker1
+        BLPOP deploy_queue
+        Max 2 concurrent deploys
+    end note
+}
+
+package "Build System" {
+    [deploy_single.sh] as DeployScript
+    note right of DeployScript
+        Orchestrates build
+        Manages containers
+        Updates registry
+    end note
+    
+    [Docker Builder] as DockerBuild
+    note right of DockerBuild
+        BuildKit cache:
+        - pnpm store
+        - Astro cache
+        Multi-stage build
+    end note
+    
+    [Base Images] as BaseImages
+    note right of BaseImages
+        deploy-node:20-alpine
+        deploy-nginx:alpine
+        Updated weekly (Sunday 03:00)
+    end note
+}
+
+package "Storage" {
+    [Work Trees] as WorkTrees
+    note right of WorkTrees
+        /opt/deploy/{PAGE_HASH}/
+        Checked out code
+        Dockerfile, .dockerignore
+    end note
+    
+    [Registry] as Registry
+    note right of Registry
+        /opt/deploy/registry.json
+        Maps PAGE_HASH to port
+    end note
+    
+    [Logs] as Logs
+    note right of Logs
+        /var/log/deploy/deploy.log
+        /var/log/deploy/worker-*.log
+    end note
+}
+
+package "Runtime" {
+    [Docker Containers] as Containers
+    note right of Containers
+        deploy-{PAGE_HASH}
+        Port: 9000-9998
+        Internal: 8000
+    end note
+    
+    [Nginx] as Nginx
+    note right of Nginx
+        /etc/nginx/sites-available/deploy/
+        Proxy to containers
+        SSL/TLS (Certbot)
+    end note
+}
+
+' ========================================
+' Connections
+' ========================================
+Dev --> Git
+Git --> SSH : "git push"
+SSH --> GitWrap : "forced command"
+GitWrap --> GitRepos
+GitRepos --> Hook : "post-receive"
+Hook --> WorkTrees
+Hook --> Redis : "RPUSH deploy_queue"
+Redis --> Worker1 : "BLPOP"
+Redis --> Worker2 : "BLPOP"
+Worker1 --> DeployScript
+Worker2 --> DeployScript
+WorkTrees --> DeployScript : "provides code"
+DeployScript --> DockerBuild : "docker build"
+BaseImages --> DockerBuild : "FROM (uses)"
+DeployScript --> Registry : "updates"
+DeployScript --> Logs
+Worker1 --> Logs
+Worker2 --> Logs
+
+' Runtime connections (declared last to position Runtime below)
+DockerBuild --> Containers : "creates"
+DeployScript --> Nginx : "config + reload"
+Containers --> Nginx : "proxy_pass"
+Nginx --> Logs
+
+@enduml

@@ -1,0 +1,99 @@
+@startuml
+
+skinparam sequence {
+    ArrowColor #2E86AB
+    LifeLineBorderColor #2E86AB
+    LifeLineBackgroundColor #E8F4F8
+    ParticipantBorderColor #2E86AB
+    ParticipantBackgroundColor #E8F4F8
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #2E86AB
+    FontColor #000000
+}
+
+skinparam box {
+    BackgroundColor #FFFFFF
+    BorderColor #2E86AB
+}
+
+title VCS Workflow: User Edits to Preview
+
+' ========================================
+' Participants
+' ========================================
+
+actor "User" as User
+participant "Local Git" as LocalGit
+participant "SSH Server" as SSH
+participant "git_wrap.sh" as GitWrap
+participant "Bare Repo" as BareRepo
+participant "post-receive" as Hook
+participant "Work Tree" as WorkTree
+participant "Redis Queue" as Redis
+participant "Deploy Worker" as Worker
+participant "Docker Build" as Docker
+participant "Container" as Container
+participant "Nginx" as Nginx
+participant "Production Site" as Site
+
+== User Makes Changes ==
+
+User -> LocalGit: Edit files\n(astro.config, pages, etc.)
+User -> LocalGit: git add .
+User -> LocalGit: git commit -m "changes"
+
+== Push to Server ==
+
+User -> LocalGit: git push origin main
+LocalGit -> SSH: SSH connection\ngit@server
+SSH -> GitWrap: Execute forced command\n(command="git_wrap.sh")
+
+alt Repository doesn't exist
+    GitWrap -> BareRepo: git init --bare
+    GitWrap -> Hook: Create post-receive hook
+end
+
+GitWrap -> BareRepo: git-receive-pack\n(receive commits)
+
+== Post-Receive Hook ==
+
+BareRepo -> Hook: Trigger post-receive\n(oldrev newrev refname)
+Hook -> Hook: Validate branch\n(main/master only)
+Hook -> WorkTree: git checkout -f main
+Hook -> WorkTree: Generate Dockerfile
+Hook -> WorkTree: Create package.cache.json
+Hook -> Redis: RPUSH deploy_queue PAGE_HASH
+
+note right of Redis
+    Push completes quickly
+    Build happens async
+end note
+
+Hook --> LocalGit: Push success
+
+== Async Deployment ==
+
+Redis -> Worker: BLPOP deploy_queue\n(worker gets job)
+Worker -> Docker: docker build\n(with BuildKit cache)
+Docker -> Docker: Install dependencies\n(cached pnpm store)
+Docker -> Docker: Build Astro site\n(cached .astro)
+Docker -> Docker: Create nginx image
+
+Worker -> Container: Stop old container
+Worker -> Container: docker run new container\n(port from registry)
+Worker -> Registry: Update registry.json\n(port mapping)
+Worker -> Nginx: Create config file\n/etc/nginx/sites-available/deploy/PAGE_HASH.conf
+Worker -> Nginx: nginx -t && reload
+
+== Site Available ==
+
+Nginx -> Site: Proxy requests\nhttps://DOMAIN/PAGE_HASH/
+Site -> User: Preview new version
+
+Worker -> Redis: LPUSH deploy:notify\n(deployment status JSON)
+Worker -> Logs: Write to deploy.log
+
+@enduml
