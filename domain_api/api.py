@@ -16,10 +16,19 @@ from config import (
     MEDIA_STORAGE_DIR,
     MEDIA_MAX_UPLOAD_BYTES,
     MEDIA_PUBLIC_URL,
+    CHALLENGE_SECRET,
+    CHALLENGE_DIFFICULTY,
+    CHALLENGE_TOKEN_TTL,
+    REDIS_HOST,
+    REDIS_PORT,
 )
 from beget_client import BegetClient, BegetAPIError
 from flask import send_file
 import traceback
+import hashlib
+import time
+import redis as redis_lib
+import jwt as pyjwt
 
 from media_storage import save_picture, get_picture_paths, delete_picture
 
@@ -63,7 +72,10 @@ def check_local_only():
 @app.before_request
 def before_request():
     """Проверка перед каждым запросом"""
-    # Проверяем доступ только с localhost
+    # Challenge endpoints are public (accessed via nginx proxy from browser)
+    if request.path.startswith('/api/challenge'):
+        return None
+    # Все остальные — только с localhost
     error_response = check_local_only()
     if error_response:
         return error_response
@@ -262,6 +274,118 @@ def get_picture(pic_id):
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
 
+
+
+
+# ============================================================
+# Anti-Scraping: JS Challenge endpoints
+# ============================================================
+
+def _redis_client():
+    """Get Redis client for challenge nonce storage."""
+    try:
+        r = redis_lib.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        r.ping()
+        return r
+    except Exception:
+        return None
+
+
+@app.route('/api/challenge', methods=['GET'])
+@limiter.limit("30 per minute")
+def get_challenge():
+    """Issue a PoW challenge."""
+    challenge = hashlib.sha256(
+        f"{time.time()}{request.remote_addr}".encode()
+    ).hexdigest()
+    expires_in = 60
+
+    r = _redis_client()
+    if r:
+        r.setex(f"challenge:{challenge}", expires_in, "pending")
+
+    return jsonify({
+        "success": True,
+        "challenge": challenge,
+        "difficulty": CHALLENGE_DIFFICULTY,
+        "expires_in": expires_in,
+    })
+
+
+@app.route('/api/challenge-token', methods=['POST'])
+@limiter.limit("20 per minute")
+def verify_challenge():
+    """Verify PoW solution, issue short-lived access token."""
+    if not CHALLENGE_SECRET:
+        return jsonify({"success": False, "error": {"code": "NOT_CONFIGURED", "message": "Challenge secret not set"}}), 503
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": {"code": "INVALID_JSON", "message": "JSON body required"}}), 400
+
+    challenge = (data.get("challenge") or "").strip()
+    nonce = str(data.get("nonce") or "").strip()
+
+    if not challenge or not nonce:
+        return jsonify({"success": False, "error": {"code": "MISSING_FIELDS", "message": "challenge and nonce required"}}), 400
+
+    if len(nonce) > 20:
+        return jsonify({"success": False, "error": {"code": "INVALID_NONCE", "message": "nonce too long"}}), 400
+
+    r = _redis_client()
+    if r:
+        key = f"challenge:{challenge}"
+        val = r.get(key)
+        if not val:
+            return jsonify({"success": False, "error": {"code": "CHALLENGE_EXPIRED", "message": "Challenge expired or already used"}}), 400
+        r.delete(key)
+
+    attempt = hashlib.sha256(f"{challenge}{nonce}".encode()).hexdigest()
+    required_prefix = "0" * CHALLENGE_DIFFICULTY
+    if not attempt.startswith(required_prefix):
+        return jsonify({"success": False, "error": {"code": "INVALID_SOLUTION", "message": "PoW verification failed"}}), 400
+
+    payload = {
+        "iat": int(time.time()),
+        "exp": int(time.time()) + CHALLENGE_TOKEN_TTL,
+        "sub": "antibot",
+        "ip": request.remote_addr,
+    }
+    token = pyjwt.encode(payload, CHALLENGE_SECRET, algorithm="HS256")
+
+    return jsonify({
+        "success": True,
+        "token": token,
+        "expires_in": CHALLENGE_TOKEN_TTL,
+    })
+
+
+@app.route('/api/challenge-verify', methods=['GET'])
+@limiter.limit("60 per minute")
+def verify_token():
+    """Verify antibot token — used by nginx auth_request. Returns 200 or 401."""
+    if not CHALLENGE_SECRET:
+        return "", 200
+
+    token = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get("ab_token")
+    if not token:
+        token = request.args.get("token")
+
+    if not token:
+        return jsonify({"error": "No token"}), 401
+
+    try:
+        pyjwt.decode(token, CHALLENGE_SECRET, algorithms=["HS256"])
+        return "", 200
+    except pyjwt.ExpiredSignatureError:
+        return jsonify({"error": "Token expired"}), 401
+    except pyjwt.InvalidTokenError:
+        return jsonify({"error": "Invalid token"}), 401
 
 if __name__ == '__main__':
     app.run(

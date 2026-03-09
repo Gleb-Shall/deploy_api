@@ -278,6 +278,9 @@ server {
     }
 
     location / {
+        # Anti-scraping: block bad bots, rate limit (search engines unaffected)
+        if (\$bad_bot) { return 403; }
+        limit_req zone=deploy_site burst=50 nodelay;
         proxy_pass http://127.0.0.1:${PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -374,6 +377,9 @@ else
 # Все пути /PAGE_HASH/* идут в контейнер (в т.ч. /_astro/, assets)
 # Astro требует base: '/PAGE_HASH/' в astro.config
 location /${PAGE_HASH}/ {
+    # Anti-scraping: block bad bots, rate limit
+    if (\$bad_bot) { return 403; }
+    limit_req zone=deploy_site burst=50 nodelay;
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;

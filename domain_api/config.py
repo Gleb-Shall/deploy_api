@@ -38,6 +38,16 @@ MEDIA_MAX_UPLOAD_BYTES = int(os.getenv('MEDIA_MAX_UPLOAD_BYTES', '10485760'))  #
 # Базовый URL для ссылки в ответе upload (без слэша в конце)
 MEDIA_PUBLIC_URL = (os.getenv('MEDIA_PUBLIC_URL') or 'https://media.automatoria.ru').rstrip('/')
 
+
+# JS Challenge (anti-scraping protection)
+CHALLENGE_SECRET = os.getenv('CHALLENGE_SECRET', '')
+CHALLENGE_DIFFICULTY = int(os.getenv('CHALLENGE_DIFFICULTY', '4'))
+CHALLENGE_TOKEN_TTL = int(os.getenv('CHALLENGE_TOKEN_TTL', '300'))  # seconds
+
+# Redis for challenge nonce storage
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+
 # Валидация
 if not BEGET_LOGIN or not BEGET_PASSWORD:
     raise ValueError(

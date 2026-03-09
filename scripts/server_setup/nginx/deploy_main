@@ -1,0 +1,74 @@
+# Главный конфиг для deploy-сайтов (Git push -> post-receive)
+# Сайты доступны по http://DOMAIN/{page_hash}/
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name your-domain.com _;
+
+    # Сайты деплоятся в /{page_hash}/
+    include /etc/nginx/sites-available/deploy/*.conf;
+
+    # Заглушка для корня
+    location / {
+        return 200 'Deploy: сайты по /{hash}/';
+        add_header Content-Type text/plain;
+    }
+}
+
+
+server {
+    server_name automatoria.ru; # managed by Certbot
+
+    # Сайты деплоятся в /{page_hash}/
+    include /etc/nginx/sites-available/deploy/*.conf;
+
+
+    # -------- Anti-Scraping: JS Challenge API --------
+    location /api/challenge {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        limit_req zone=deploy_site_strict burst=10 nodelay;
+    }
+
+    # Honeypot: bots accessing this get logged (feed to fail2ban)
+    location /_hp_/ {
+        access_log /var/log/nginx/honeypot.log;
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+
+    # Заглушка для корня
+    location / {
+        return 200 'Deploy: сайты по /{hash}/';
+        add_header Content-Type text/plain;
+    }
+
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/automatoria.ru/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/automatoria.ru/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+server {
+    if ($host = automatoria.ru) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80 ;
+    listen [::]:80 ;
+    server_name automatoria.ru;
+    return 404; # managed by Certbot
+
+
+}
+
+include /etc/nginx/sites-available/deploy/custom/*.conf;
