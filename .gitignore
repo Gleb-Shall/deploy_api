@@ -43,6 +43,7 @@ google_oauth.json
 *-sa.json
 yandex_webmaster.json
 *7.json
+everything-claude-code/
 
 # SSH ключи (не коммитить!)
 keys_for_servers/

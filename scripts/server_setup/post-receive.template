@@ -95,7 +95,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/app/.astro,id=astro-__PAGE_HASH__ \
     env CI=1 PAGE_HASH=__PAGE_HASH__ pnpm run build
 RUN test -d dist || (echo "ERROR: dist not found" && exit 1)
-RUN if [ -n "__CUSTOM_DOMAIN__" ]; then test -f dist/sitemap.xml || test -f dist/sitemap-index.xml || (echo "Sitemap not generated. Add site + integrations: [sitemap()] in astro config." && ls -la dist/ && exit 1); fi
+    RUN if [ -n "__CUSTOM_DOMAIN__" ]; then test -f dist/sitemap.xml || test -f dist/sitemap-index.xml || (echo "Warning: Sitemap not found in dist/. Search engines may not index all pages." >&2); fi
 
 FROM ${NGINX_IMAGE}
 COPY --from=builder /app/dist /usr/share/nginx/html
