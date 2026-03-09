@@ -1,150 +1,533 @@
-# Git Push Deploy
+# Git Push Deploy — Платформа автоматического деплоя статических Astro-сайтов
 
-Деплой Astro-сайтов через `git push`. Push в bare-репо → checkout → Docker build → nginx. Очередь Redis, до 2 одновременных деплоев, pnpm.
+Полностью автоматический деплой Astro-сайтов через `git push`. Инфраструктура основана на Git hooks, Redis очереди и Docker. Сайты доступны по адресу `https://automatoria.ru/{hash}/` или по кастомному домену с автоматическим HTTPS.
+
+## Как это работает
+
+```
+git push → SSH forced command (git_wrap.sh) → bare-репо → post-receive hook → Redis queue →
+deploy worker → Docker build → контейнер → nginx reverse proxy
+```
+
+**Особенности:**
+- До 2 одновременных деплоев (очередь Redis)
+- Автоматический HTTPS через Let's Encrypt
+- Кастомные домены через файл `domain` в корне проекта
+- Поддержка pnpm, npm, yarn
+- Интеграция с Google Search Console и Яндекс Индекс
+- Микросервисы: Domain API (доменные проверки) и Screenshot API (скриншоты)
 
 ## Структура проекта
 
 ```
-├── domain_api/                   # API доменов (Beget) + медиа (картинки чат-бота) на порту 5000
-├── screenshot_api/               # API скриншотов Playwright (модуль генерации), порт 5051
-├── local_develope/               # Локальные скрипты: деплой на сервер, domain_api, ключи
-│   ├── deploy_to_server.sh      # Копирует скрипты в /opt/deploy_api/scripts/, перезапускает воркеры
-│   ├── deploy_domain_api.sh     # Деплой domain_api + nginx для media.<DOMAIN> → 5000
-│   └── deploy_screenshot_api.sh  # Деплой screenshot_api (порт 5051)
-├── scripts/
-│   └── server_setup/
-│       ├── setup_fresh_server.sh  # Первичная настройка сервера (один раз)
-│       ├── post-receive.template  # Хук: checkout → очередь → deploy (копируется как post-receive)
-│       ├── git_wrap.sh            # Обёртка для push: создаёт репо, ставит post-receive
-│       ├── deploy_single.sh       # Деплой одного сайта (вызывается воркером)
-│       ├── deploy_worker.sh       # Воркер очереди Redis
-│       ├── remove_site.sh         # Удаление сайта (-A = удалить все)
-│       ├── seo_submit_google.py   # Опционально: GSC — сайт в твоём аккаунте + верификация + sitemap (OAuth) или только sitemap (сервисный аккаунт)
-│       ├── install_deploy_workers.sh
-│       ├── PATHS.md
-│       └── README.md
-└── ...
+deploy_api/
+├── domain_api/                          # Flask API: проверка доменов через Beget, порт 5000
+│   ├── api.py                           # Flask приложение
+│   ├── beget_client.py                  # Клиент для Beget API
+│   ├── config.py                        # Конфигурация
+│   ├── requirements.txt                 # Python зависимости
+│   ├── .env.example                     # Шаблон окружения (BEGET_LOGIN, BEGET_PASSWORD)
+│   ├── README.md                        # Документация Domain API
+│   └── QUICKSTART.md                    # Быстрый старт
+│
+├── screenshot_api/                      # Flask API: скриншоты Playwright, порт 5051
+│   ├── api.py                           # Flask приложение
+│   ├── requirements.txt                 # Python зависимости
+│   ├── .env.example                     # Шаблон окружения
+│   └── README.md                        # Документация Screenshot API
+│
+├── server/                              # Серверная часть (scripts, configs, docs)
+│   ├── scripts/                         # Bash/Python скрипты деплоя
+│   │   ├── setup_fresh_server.sh        # ⭐ Первичная настройка сервера (один раз)
+│   │   ├── git_wrap.sh                  # SSH forced command: создание репо и пост-receive хук
+│   │   ├── post-receive.template        # Git hook: checkout + очередь + деплой
+│   │   ├── deploy_worker.sh             # Демон очереди Redis (max 2 деплоя одновременно)
+│   │   ├── deploy_single.sh             # Деплой одного сайта (вызывается воркером)
+│   │   ├── remove_site.sh               # Удаление сайта (-A для удаления всех)
+│   │   ├── install_deploy_workers.sh    # Установка systemd сервисов для воркеров
+│   │   ├── install_api_services.sh      # Установка systemd сервисов domain_api и screenshot_api
+│   │   ├── docker_pull_images.sh        # Предварительная загрузка Docker образов
+│   │   ├── seo_submit_google.py         # SEO: добавление сайта в Google Search Console
+│   │   ├── seo_submit_yandex.py         # SEO: отправка в Яндекс Индекс (IndexNow)
+│   │   ├── get_google_oauth_token.py    # Генерация OAuth токена для Google API
+│   │   ├── deploy_history.sh            # История деплоев
+│   │   ├── check_deploy_status.sh       # Проверка статуса деплоев
+│   │   ├── diagnose_docker.sh           # Диагностика Docker проблем
+│   │   └── manage_ports_queue.sh        # Управление портами для контейнеров
+│   │
+│   ├── nginx/                           # Nginx конфигурация
+│   │   ├── deploy_main                  # Основной конфиг nginx (reverse proxy, SSL)
+│   │   └── antibot.conf                 # Anti-scraping и anti-DDoS конфигурация
+│   │
+│   ├── fail2ban/                        # Fail2ban конфигурация
+│   │   └── *.conf                       # Фильтры от скрейпинга и атак
+│   │
+│   ├── systemd/                         # Systemd unit файлы
+│   │   ├── deploy-worker.service        # Сервис для deploy_worker.sh
+│   │   ├── domain-api.service           # Сервис для Domain API
+│   │   └── screenshot-api.service       # Сервис для Screenshot API
+│   │
+│   └── docs/                            # Техническая документация
+│       ├── PATHS.md                     # Описание путей на сервере
+│       ├── DEPLOY_FLOW.md               # Детальное описание потока деплоя
+│       └── README.md                    # Индекс документации
+│
+├── tools/                               # Локальные скрипты для разработчика
+│   ├── deploy_to_server.sh              # ⭐ Обновляет скрипты на сервере (deploy_api, nginx, systemd, fail2ban)
+│   ├── deploy_domain_api.sh             # Деплой domain_api на сервер + nginx для media.<DOMAIN>
+│   ├── deploy_screenshot_api.sh         # Деплой screenshot_api на сервер
+│   ├── deploy_apis_to_server.sh         # Одновременный деплой обоих APIs
+│   ├── add_git_key.sh                   # Добавление SSH ключа в authorized_keys на сервере
+│   ├── parse_json_to_folder.py          # Парсинг JSON в структуру проекта
+│   ├── stress_deploy.sh                 # Тестирование нагрузки (stress test)
+│   └── example.json.example             # Шаблон для parse_json_to_folder.py
+│
+├── docs/                                # Архитектурные диаграммы (PlantUML и Markdown)
+│   ├── 1_deployment_pipeline.puml       # Диаграмма потока деплоя
+│   ├── 2_component_diagram.puml         # Архитектурная диаграмма компонентов
+│   ├── 3_vcs_sequence.puml              # Диаграмма последовательности работы с Git
+│   ├── 4_versioning_model.md            # Модель версионирования
+│   ├── 5_git_integration.md             # Git интеграция и безопасность
+│   ├── 6_infrastructure.md              # Инфраструктурная схема
+│   └── README.md                        # Как использовать диаграммы
+│
+├── .cursor/                             # Cursor IDE конфигурация (правила, агенты, MCP)
+├── .git/                                # Git репозиторий
+├── .gitignore                           # Игнорируемые файлы
+└── README.md                            # Этот файл
 ```
 
 ## Быстрый старт
 
-### 1. Сервер: первичная настройка (один раз)
+### Требования
+
+- Linux сервер (Ubuntu 20.04+) с Docker, Redis, Git, Nginx
+- SSH доступ как `root`
+- Домен (или используйте `automatoria.ru/{hash}/`)
+- (опционально) Beget аккаунт для покупки доменов и управления SSL
+- (опционально) Google API ключ для SEO (добавление сайтов в Search Console)
+
+### Шаг 1: Первичная настройка сервера (один раз)
+
+На вашем ПК выполните:
 
 ```bash
+export DEPLOY_SERVER=root@YOUR_SERVER_IP
 export DOMAIN=automatoria.ru
-scp -r scripts/server_setup root@СЕРВЕР:/tmp/
-ssh root@СЕРВЕР "cd /tmp/server_setup && sudo bash setup_fresh_server.sh"
+
+# Копируем скрипты в /tmp на сервере
+scp -r server/scripts $DEPLOY_SERVER:/tmp/server_scripts
+
+# Запускаем первичную настройку
+ssh $DEPLOY_SERVER "bash /tmp/server_scripts/setup_fresh_server.sh"
 ```
 
-Добавь в `/home/git/.ssh/authorized_keys`:
-```
-command="/opt/deploy_api/scripts/git_wrap.sh" ssh-rsa AAAA...твой_ключ
-```
+**setup_fresh_server.sh установит:**
+- Docker
+- Redis для очереди деплоев
+- Nginx (базовая конфигурация)
+- Git users и структуру папок
+- Systemd сервисы для воркеров
 
-### 2. Локально: создать проект и запушить
+После завершения добавьте ваш SSH ключ в `/home/git/.ssh/authorized_keys` на сервере (с forced command):
 
 ```bash
-python3 scripts/parse_json_to_folder.py
-cd parsed_project/ХЭШ
-git init && git add . && git commit -m "Initial"
-git remote add origin git@СЕРВЕР:sites/ХЭШ.git
+cat ~/.ssh/id_rsa.pub | ssh $DEPLOY_SERVER \
+  "echo 'command=\"/opt/deploy_api/scripts/git_wrap.sh\" \$(cat)' >> /home/git/.ssh/authorized_keys"
+```
+
+Или используйте скрипт:
+
+```bash
+./tools/add_git_key.sh
+```
+
+### Шаг 2: Разверните скрипты и конфиги
+
+```bash
+./tools/deploy_to_server.sh
+```
+
+Этот скрипт:
+- Копирует все скрипты из `server/scripts/` в `/opt/deploy_api/scripts/` на сервере
+- Копирует nginx конфиги из `server/nginx/`
+- Копирует systemd units из `server/systemd/`
+- Копирует fail2ban конфиги из `server/fail2ban/`
+- Перезапускает deploy workers
+
+### Шаг 3: Создайте и задеплойте первый сайт
+
+Локально на вашем ПК:
+
+```bash
+# Создайте Astro проект или используйте существующий
+cd ~/my-astro-site
+
+# Инициализируйте Git
+git init
+git add .
+git commit -m "Initial commit"
+
+# Добавьте remote
+git remote add origin git@YOUR_SERVER_IP:sites/mysite.git
+
+# Первый push!
 git push -u origin main
 ```
 
-При первом push git_wrap создаёт bare-репо, ставит post-receive. Push попадает в очередь Redis, воркер собирает Docker и настраивает nginx. Сайт: `https://DOMAIN/ХЭШ/`. Кастомный домен: в корне репо файл `domain` (одна строка — домен), A-запись на сервер → при деплое SSL и SEO (пинг Google/Bing, IndexNow для Яндекса, при желании sitemap в конфиге Astro). Чтобы сайт появился в **твоём** Google Search Console: один раз получи refresh_token через `get_google_oauth_token.py`, положи креды в `GOOGLE_OAUTH_CREDENTIALS` на сервере — при деплое сайт добавится в аккаунт, пройдёт верификацию и отправится sitemap.
+**Что происходит при push:**
 
-**Обновление скриптов на сервере** (после изменений в репо):
-```bash
-./local_develope/deploy_to_server.sh
+1. SSH запускает `git_wrap.sh` (forced command)
+2. `git_wrap.sh` создаёт bare-репо если его ещё нет, устанавливает `post-receive` хук
+3. `post-receive` хук добавляет задачу в Redis очередь
+4. `deploy_worker.sh` забирает задачу из очереди и запускает `deploy_single.sh`
+5. `deploy_single.sh`:
+   - Клонирует последний коммит в work tree
+   - Выполняет `npm/pnpm install` и `npm run build`
+   - Создаёт Docker контейнер для сайта
+   - Настраивает nginx для проксирования трафика
+
+**Результат:** Сайт доступен по адресу `https://YOUR_DOMAIN/SITE_HASH/`
+
+### Шаг 4: (опционально) Кастомный домен
+
+Чтобы использовать кастомный домен вместо хеша:
+
+1. В корне вашего проекта создайте файл `domain` с одной строкой:
+
 ```
-Копирует все скрипты в `/opt/deploy_api/scripts/`, systemd units, перезапускает воркеры. Сервер: `DEPLOY_SERVER` (по умолчанию `root@45.90.35.151`).
+example.com
+```
 
-## Архитектура
+2. Скоммитьте и запушьте:
 
-- **Инфраструктура:** `/opt/deploy_api/scripts/` — скрипты
-- **Данные:** `/opt/deploy/` — registry, work tree каждого сайта
-- **Git:** `/var/git/sites/` — bare-репо
-- **Очередь:** Redis `deploy_queue`, 2 воркера (max 2 деплоя одновременно)
+```bash
+echo "example.com" > domain
+git add domain
+git commit -m "Add custom domain"
+git push
+```
 
-Подробнее: `scripts/server_setup/PATHS.md`, `scripts/server_setup/README.md`
+3. Убедитесь, что A-запись домена указывает на IP вашего сервера:
+
+```bash
+dig example.com
+# example.com.    300 IN A YOUR_SERVER_IP
+```
+
+4. При следующем деплое скрипты автоматически:
+   - Получат SSL сертификат через Let's Encrypt
+   - Настроят nginx для кастомного домена
+   - Отправят сайт в поисковые системы (Google, Яндекс, Bing)
+
+**Обновление скриптов на сервере** (после изменений в вашем локальном репо):
+
+```bash
+./tools/deploy_to_server.sh
+```
+
+Это скопирует все изменения скриптов, конфигов и systemd юнитов на сервер и перезапустит воркеры.
+
+## Архитектура системы
+
+### Компоненты
+
+**На сервере:**
+
+| Компонент | Назначение | Расположение |
+|-----------|-----------|--------------|
+| **Git** | Bare-репозитории для каждого сайта | `/var/git/sites/` |
+| **Redis** | Очередь деплоев (max 2 одновременно) | Port 6379 |
+| **Docker** | Контейнеры для сайтов (Astro build) | Managed by Docker |
+| **Nginx** | Reverse proxy + SSL termination | Port 80, 443 |
+| **Deploy Worker** | Демон, обрабатывающий очередь | systemd: `deploy-worker` |
+
+**Пути на сервере:**
+
+| Путь | Содержимое |
+|------|-----------|
+| `/opt/deploy_api/scripts/` | Bash/Python скрипты деплоя |
+| `/opt/deploy_api/domain_api/` | Domain API (Flask) |
+| `/opt/deploy_api/screenshot_api/` | Screenshot API (Flask) |
+| `/opt/deploy/` | Worktrees и Docker контейнеры сайтов |
+| `/opt/deploy/media/` | Медиа файлы от API |
+| `/opt/deploy/screenshots/` | Скриншоты от API |
+| `/var/git/sites/` | Bare Git репозитории |
+
+Подробнее: `/server/docs/PATHS.md`, `/server/docs/DEPLOY_FLOW.md`
+
+### Поток деплоя
+
+1. **Push локально:** `git push origin main`
+2. **SSH forced command:** `git_wrap.sh` создаёт bare-репо (если его нет) и ставит `post-receive` хук
+3. **Git hook запускается:** `post-receive.template` добавляет задачу в Redis очередь (`LPUSH deploy_queue`)
+4. **Deploy worker берёт задачу:** `deploy_worker.sh` получает задачу из очереди и запускает `deploy_single.sh`
+5. **Сборка сайта:**
+   - `deploy_single.sh` клонирует репо в work tree
+   - Выполняет `npm/pnpm install && npm run build`
+   - Проверяет наличие файла `domain` для кастомного домена
+   - Получает SSL сертификат (Let's Encrypt)
+6. **Docker контейнер:** Собирается образ с app и запускается контейнер (port слушает)
+7. **Nginx:** Настраивается reverse proxy на `https://DOMAIN/HASH/` или `https://CUSTOM_DOMAIN/`
+8. **SEO:** Сайт отправляется в поисковые системы (Google, Яндекс, Bing)
+
+### Параллелизм
+
+- **Max 2 деплоя одновременно** (настраивается в Redis очереди)
+- При большой очереди остальные задачи ждут свободного worker'а
+- Deploy worker'ов можно добавить через systemd (установка в `install_deploy_workers.sh`)
 
 ---
 
-## Domain API — проверка доменов (.ru, Beget)
+## Domain API — Проверка доменов (.ru, Beget)
 
-Отдельный микросервис в `domain_api/`: проверка доступности и цены домена через Beget. Не связан с деплоем сайтов — свой порт, свой `.env`, можно не ставить.
+Микросервис для проверки доступности и цены доменов через Beget API. **Опционален** — нужен только если вы хотите проверять домены перед покупкой.
 
-| Возможность | Описание |
-|-------------|----------|
-| **Проверка** | Реальная цена и доступность домена (в т.ч. премиум), зона .ru |
+### Настройка
 
-### Эндпоинт
+**Локально (разработка):**
 
 ```bash
-# Проверка домена (X-API-Key опционален, если задан в .env)
+cd domain_api
+cp .env.example .env
+# Заполните BEGET_LOGIN и BEGET_PASSWORD (получите в панели Beget)
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python api.py
+```
+
+**На сервере:**
+
+```bash
+# Из корня проекта
+./tools/deploy_domain_api.sh
+
+# Затем создайте .env на сервере
+ssh root@YOUR_SERVER_IP
+sudo nano /opt/deploy_api/domain_api/.env
+# Заполните BEGET_LOGIN и BEGET_PASSWORD
+sudo chmod 600 /opt/deploy_api/domain_api/.env
+```
+
+**Автозапуск (systemd):**
+
+```bash
+sudo bash /opt/deploy_api/server/scripts/install_api_services.sh
+# Теперь сервис domain-api запускается автоматически при загрузке
+systemctl status domain-api
+```
+
+### API Endpoints
+
+**Проверка домена:**
+
+```bash
 curl -X POST http://127.0.0.1:5000/api/domain/check \
   -H "Content-Type: application/json" \
-  -d '{"domain": "example.ru", "period": 1}'
+  -H "X-API-Key: YOUR_API_KEY" \
+  -d '{
+    "domain": "example.ru",
+    "period": 1
+  }'
 ```
 
-Ответ: `available`, `can_purchase`, `price`, `balance`.
+**Ответ:**
 
-### Доступ с другого сервера (чат-бот и т.п.)
+```json
+{
+  "success": true,
+  "data": {
+    "domain": "example.ru",
+    "available": true,
+    "can_purchase": true,
+    "price": 299,
+    "currency": "RUB",
+    "balance": 10000
+  }
+}
+```
 
-API слушает только `127.0.0.1:5000`. Чтобы дергать его с другой машины без открытия порта — **SSH-туннель** с сервера, где крутится клиент:
+### Доступ с другого сервера
+
+Domain API слушает только `127.0.0.1:5000` (не открыт в интернет). Для доступа с другой машины используйте **SSH туннель:**
 
 ```bash
-ssh -i ~/.ssh/domain_api_tunnel -N -L 5000:127.0.0.1:5000 root@СЕРВЕР_С_API
+# На машине, которая будет дергать API
+ssh -i ~/.ssh/key -N -L 5000:127.0.0.1:5000 root@YOUR_SERVER_IP
+
+# Теперь на локальной машине можно обращаться к http://127.0.0.1:5000
 ```
 
-Тогда на машине с чат-ботом `http://127.0.0.1:5000` будет вести на Domain API. Можно оформить как systemd-сервис (см. `domain_api/README.md`).
+Или оформите как systemd сервис (см. `domain_api/README.md`).
 
-### Установка и конфиг
-
-- **Локально:** `cd domain_api && cp .env.example .env`, заполнить `BEGET_LOGIN`, `BEGET_PASSWORD`, затем `pip install -r requirements.txt` и `python api.py`.
-- **На сервере:** из корня проекта `./local_develope/deploy_domain_api.sh`, затем создать `.env` на сервере в `/opt/deploy_api/domain_api/`.
-- **Автозапуск (systemd):** на сервере после деплоя выполнить `sudo bash scripts/server_setup/install_api_services.sh` — поднимет сервисы `domain_api` и `screenshot_api`, они будут стартовать при загрузке системы.
-
-Подробнее: **`domain_api/README.md`**.
+**Подробнее:** `domain_api/README.md`
 
 ---
 
-## Медиа и скриншоты
+## Screenshot API — Скриншоты Playwright
 
-**Картинки от чат-бота** — на том же порту, что и Domain API (5000):
+Микросервис для загрузки и хранения скриншотов. Используется генератором для сохранения скриншотов страниц.
 
-- **Upload:** `POST http://127.0.0.1:5000/api/media/upload` (multipart `file`, заголовок `X-API-Key` как у domain API)
-- **Просмотр:** `https://media.automatoria.ru/picture/{id}` (nginx проксирует на 127.0.0.1:5000)
+### Настройка
 
-Хранение: `MEDIA_STORAGE_DIR` в `.env` domain_api (по умолчанию `/opt/deploy/media`).
+```bash
+cd screenshot_api
+pip install -r requirements.txt
+python api.py
+```
 
-**Скриншоты Playwright (модуль генерации)** — отдельный сервис на порту 5051:
+На сервере используйте `./tools/deploy_screenshot_api.sh` и установите systemd сервис через `install_api_services.sh`.
 
-- **Upload:** `POST http://127.0.0.1:5051/api/screenshots` (multipart `file` или raw body)
-- **Просмотр:** `GET http://127.0.0.1:5051/screenshot/<id>`
+### API Endpoints
 
-Подробнее: `screenshot_api/README.md`. Деплой: `./local_develope/deploy_screenshot_api.sh`. Nginx для media — входит в `deploy_domain_api.sh`.
+**Загрузка скриншота:**
+
+```bash
+curl -X POST http://127.0.0.1:5051/api/screenshots \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -F "file=@screenshot.png"
+```
+
+**Получение скриншота:**
+
+```bash
+curl -X GET http://127.0.0.1:5051/screenshot/SCREENSHOT_ID
+```
+
+**Подробнее:** `screenshot_api/README.md`
 
 ---
 
-## Cursor IDE (ecc-universal)
+## Медиа (картинки, загруженные через API)
 
-Правила, агенты, команды и MCP для Cursor ставятся в `.cursor/` в корне репо (официальный способ):
+Загруженные медиа файлы сохраняются в `/opt/deploy/media/` и доступны через nginx:
 
-```bash
-npm install
-npm run cursor:install -- typescript
-# или несколько языков:
-npm run cursor:install -- python golang
-```
-
-Эквивалент вызова из доки: `./install.sh --target cursor python golang` (скрипт запускается из корня проекта, чтобы создавалась именно проектная `.cursor/`).
-
-**Подробнее:** см. `docs/README.md` — скрипты для локальной разработки (не нужны на сервере).
-
-## Удаление сайта
+**Загрузка:**
 
 ```bash
-sudo /opt/deploy_api/scripts/remove_site.sh PAGE_HASH
-sudo /opt/deploy_api/scripts/remove_site.sh -A    # удалить все
+curl -X POST http://127.0.0.1:5000/api/media/upload \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -F "file=@image.jpg"
 ```
+
+**Просмотр:**
+
+```
+https://YOUR_DOMAIN/media/picture/{id}
+```
+
+Nginx проксирует запросы на Domain API (порт 5000).
+
+---
+
+## Управление сайтами
+
+### Просмотр деплоев
+
+```bash
+ssh root@YOUR_SERVER_IP
+bash /opt/deploy_api/server/scripts/deploy_history.sh
+```
+
+### Проверка статуса
+
+```bash
+bash /opt/deploy_api/server/scripts/check_deploy_status.sh
+bash /opt/deploy_api/server/scripts/check_sites_disk.sh
+```
+
+### Удаление сайта
+
+```bash
+# Удалить конкретный сайт по хешу
+sudo /opt/deploy_api/server/scripts/remove_site.sh PAGE_HASH
+
+# Удалить все сайты
+sudo /opt/deploy_api/server/scripts/remove_site.sh -A
+```
+
+---
+
+## Разработка
+
+### Локальное тестирование
+
+Для локального тестирования используйте инструменты в `tools/`:
+
+```bash
+# Парсинг JSON в структуру проекта
+python3 tools/parse_json_to_folder.py
+
+# Stress-тест деплоев
+bash tools/stress_deploy.sh
+
+# Добавление SSH ключа на сервер
+bash tools/add_git_key.sh
+```
+
+### Диагностика проблем
+
+На сервере есть полезные диагностические скрипты:
+
+```bash
+# Проверка Docker
+bash /opt/deploy_api/server/scripts/diagnose_docker.sh
+
+# Проверка очереди Redis
+redis-cli -n 0 LLEN deploy_queue
+redis-cli -n 0 LRANGE deploy_queue 0 -1
+```
+
+### Документация
+
+- **Архитектурные диаграммы:** `/docs/` (PlantUML и Markdown)
+- **Техническая документация:** `/server/docs/`
+- **API документация:** `domain_api/README.md`, `screenshot_api/README.md`
+
+Для просмотра PlantUML диаграмм используйте онлайн редактор: http://www.plantuml.com/plantuml/uml/
+
+---
+
+## Troubleshooting
+
+### Деплой зависает или не запускается
+
+```bash
+# Проверьте очередь Redis
+redis-cli -n 0 LLEN deploy_queue
+
+# Проверьте статус worker'а
+systemctl status deploy-worker
+journalctl -u deploy-worker -f
+```
+
+### Docker ошибки
+
+```bash
+# Диагностика Docker
+bash /opt/deploy_api/server/scripts/diagnose_docker.sh
+
+# Пред загрузка образов
+bash /opt/deploy_api/server/scripts/docker_pull_images.sh
+```
+
+### Nginx не проксирует трафик
+
+```bash
+# Проверьте конфиг nginx
+sudo nginx -t
+
+# Перезагрузите nginx
+sudo systemctl reload nginx
+
+# Логи nginx
+sudo journalctl -u nginx -f
+```
+
+### Не получается подключиться по кастомному домену
+
+1. Проверьте A-запись домена: `dig YOUR_DOMAIN`
+2. Проверьте, был ли файл `domain` в репо при последнем push
+3. Проверьте наличие SSL сертификата: `ls /etc/letsencrypt/live/YOUR_DOMAIN/`
+4. Проверьте nginx конфигурацию: `sudo grep -r YOUR_DOMAIN /etc/nginx/`
