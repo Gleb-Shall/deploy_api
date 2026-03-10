@@ -76,6 +76,9 @@ while read oldrev newrev refname; do
       [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
     fi
 
+    # Copy CSS obfuscation script into work tree (included in Docker build context via COPY . .)
+    cp /opt/deploy_api/scripts/obfuscate_css.js "$WORK_TREE/obfuscate_css.js" 2>/dev/null || true
+
     # Dockerfile с pnpm + BuildKit (без # syntax= — встроенный frontend, без resolve docker.io)
     log "Dockerfile: pnpm + BuildKit"
     # Подстановки: __PAGE_HASH__, __CUSTOM_DOMAIN__ (для проверки sitemap при кастомном домене)
@@ -96,9 +99,11 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     env CI=1 PAGE_HASH=__PAGE_HASH__ pnpm run build
 RUN test -d dist || (echo "ERROR: dist not found" && exit 1)
     RUN if [ -n "__CUSTOM_DOMAIN__" ]; then test -f dist/sitemap.xml || test -f dist/sitemap-index.xml || (echo "Warning: Sitemap not found in dist/. Search engines may not index all pages." >&2); fi
+RUN if [ -f /app/obfuscate_css.js ]; then node /app/obfuscate_css.js /app/dist __PAGE_HASH__; else touch /app/css_bundle.txt; fi
 
 FROM ${NGINX_IMAGE}
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/css_bundle.txt /css_bundle.txt
 RUN echo 'server { listen 8000; root /usr/share/nginx/html; index index.html; location = /sitemap.xml { default_type application/xml; try_files /sitemap-index.xml /sitemap.xml =404; } location / { try_files $uri $uri/ /index.html; } gzip on; }' > /etc/nginx/conf.d/default.conf
 EXPOSE 8000
 CMD ["nginx", "-g", "daemon off;"]

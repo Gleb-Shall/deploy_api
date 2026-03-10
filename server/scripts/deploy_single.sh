@@ -81,6 +81,16 @@ if [[ $build_rc -ne 0 ]]; then
 fi
 rm -f "$tmpout"
 
+# Extract CSS bundle from Docker image → store in Redis for fingerprint API
+CSS_BUNDLE=$(docker run --rm --entrypoint cat "${IMAGE_NAME}" /css_bundle.txt 2>/dev/null || echo "")
+if [[ -n "$CSS_BUNDLE" && "$CSS_BUNDLE" != "" ]]; then
+  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" SET "css_bundle:${PAGE_HASH}" "$CSS_BUNDLE" EX 2592000 >/dev/null 2>&1 \
+    || log "Warning: CSS bundle not stored in Redis"
+  log "CSS bundle stored (${#CSS_BUNDLE} chars)"
+else
+  log "No CSS bundle found — CSS obfuscation inactive for this deploy"
+fi
+
 # Функция возврата порта в очередь при освобождении
 # Определяет правильный файл (чётный/нечётный) автоматически
 # Просто добавляет порт в конец файла - никаких проверок не нужно
@@ -372,6 +382,20 @@ else
   if [[ -n "$OLD_CUSTOM_DOMAIN" ]]; then
     rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
   fi
+
+  # Generate canary tokens for this preview page
+  CANARY_HTML=""
+  CANARY_TTL=31536000  # 1 year
+  for i in 1 2 3 4 5; do
+    CANARY_TOKEN=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null || echo "")
+    if [[ -n "$CANARY_TOKEN" ]]; then
+      CANARY_META="{\"page_hash\":\"${PAGE_HASH}\",\"created_at\":$(date +%s)}"
+      redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" SETEX "canary:token:${CANARY_TOKEN}" "$CANARY_TTL" "$CANARY_META" >/dev/null 2>&1 || true
+      CANARY_HTML="${CANARY_HTML}<a href=https://automatoria.ru/r/${CANARY_TOKEN}></a>"
+    fi
+  done
+  log "Canary tokens generated"
+
   cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${PAGE_HASH}
 # Все пути /PAGE_HASH/* идут в контейнер (в т.ч. /_astro/, assets)
@@ -380,6 +404,8 @@ location /${PAGE_HASH}/ {
     # Anti-scraping: block bad bots, rate limit
     if (\$bad_bot) { return 403; }
     limit_req zone=deploy_site burst=50 nodelay;
+    # sub_filter requires uncompressed response from backend
+    proxy_set_header Accept-Encoding "";
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -390,6 +416,13 @@ location /${PAGE_HASH}/ {
     proxy_send_timeout 60s;
     proxy_read_timeout 60s;
     rewrite ^/${PAGE_HASH}(/.*)\$ \$1 break;
+    # Anti-scraping injections via sub_filter
+    sub_filter_types text/html;
+    sub_filter_once on;
+    # Domain lock: redirect to automatoria.ru if HTML is hosted elsewhere
+    sub_filter '</head>' '<script src=https://automatoria.ru/api/preview-js?h=${PAGE_HASH}></script></head>';
+    # Canary links: hidden, detect when stolen HTML is opened on another domain
+    sub_filter '</body>' '<span style=display:none aria-hidden=true>${CANARY_HTML}</span></body>';
 }
 
 location = /${PAGE_HASH} {

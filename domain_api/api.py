@@ -21,7 +21,11 @@ from config import (
     CHALLENGE_TOKEN_TTL,
     REDIS_HOST,
     REDIS_PORT,
+    CANARY_REDIRECT_URL,
+    FINGERPRINT_KEY_TTL,
 )
+from canary import resolve_canary_token, log_canary_hit
+from fingerprint import score_headless, encrypt_css, HEADLESS_SCORE_THRESHOLD
 from beget_client import BegetClient, BegetAPIError
 from flask import send_file
 import traceback
@@ -72,8 +76,12 @@ def check_local_only():
 @app.before_request
 def before_request():
     """Проверка перед каждым запросом"""
-    # Challenge endpoints are public (accessed via nginx proxy from browser)
+    # Public endpoints (accessed from browser via nginx proxy)
     if request.path.startswith('/api/challenge'):
+        return None
+    if request.path.startswith('/r/'):
+        return None
+    if request.path in ('/api/fingerprint-key', '/api/preview-js'):
         return None
     # Все остальные — только с localhost
     error_response = check_local_only()
@@ -386,6 +394,175 @@ def verify_token():
         return jsonify({"error": "Token expired"}), 401
     except pyjwt.InvalidTokenError:
         return jsonify({"error": "Invalid token"}), 401
+
+# ============================================================
+# Anti-Scraping: Canary redirect
+# ============================================================
+
+@app.route('/r/<token>', methods=['GET'])
+@limiter.limit("30 per minute")
+def canary_redirect(token: str):
+    """Canary link — logs referrer (detects stolen HTML), redirects to Wikipedia."""
+    from flask import redirect
+    r = _redis_client()
+    if r and token:
+        meta = resolve_canary_token(r, token)
+        page_hash = (meta or {}).get("page_hash", "")
+        log_canary_hit(
+            r,
+            token=token,
+            page_hash=page_hash,
+            referer=request.headers.get("Referer", ""),
+            ip=request.remote_addr or "",
+            ua=request.headers.get("User-Agent", ""),
+        )
+    return redirect(CANARY_REDIRECT_URL, code=302)
+
+
+# ============================================================
+# Anti-Scraping: Fingerprint-based AES key for CSS delivery
+# ============================================================
+
+# Minified fingerprint collector + CSS decryptor injected via nginx sub_filter.
+# PAGE_HASH placeholder is replaced per-request in /api/preview-js endpoint.
+_PREVIEW_JS = r"""(function(){'use strict';
+var H='{{page_hash}}',A='https://automatoria.ru';
+// Domain lock: redirect if HTML is hosted on another domain
+var _h=window.location.hostname;
+if(_h!=='automatoria.ru'&&_h!=='preview.automatoria.ru'&&_h!=='www.automatoria.ru'){window.location.replace('https://automatoria.ru');return;}
+function hx(h){var b=new Uint8Array(h.length/2);for(var i=0;i<h.length;i+=2)b[i/2]=parseInt(h.substr(i,2),16);return b;}
+function fp(){
+  var f={};
+  f.webdriver=!!navigator.webdriver;
+  f.plugins_count=navigator.plugins?navigator.plugins.length:-1;
+  f.pdf_viewer=!!navigator.pdfViewerEnabled;
+  f.language=navigator.language||'';
+  f.platform=navigator.platform||'';
+  f.cpu_cores=navigator.hardwareConcurrency||0;
+  f.memory_gb=navigator.deviceMemory||0;
+  f.touch_points=navigator.maxTouchPoints||0;
+  f.timezone=(Intl.DateTimeFormat().resolvedOptions()||{}).timeZone||'';
+  f.screen_width=screen.width;f.screen_height=screen.height;f.color_depth=screen.colorDepth;
+  try{
+    var c=document.createElement('canvas');c.width=240;c.height=60;
+    var x=c.getContext('2d');x.textBaseline='top';x.font='14px Arial';
+    x.fillStyle='#f60';x.fillRect(125,1,62,20);
+    x.fillStyle='#069';x.fillText('Cwm fjordbank glyphs vext quiz',2,15);
+    x.fillStyle='rgba(102,204,0,0.7)';x.fillText('Cwm fjordbank glyphs vext quiz',4,17);
+    var u=c.toDataURL(),h=0;
+    for(var i=0;i<u.length;i++){h=((h<<5)-h)+u.charCodeAt(i);h|=0;}
+    f.canvas_hash=h.toString(16);f.canvas_blank=u.length<200;
+  }catch(e){f.canvas_hash='';f.canvas_blank=true;}
+  try{
+    var g=document.createElement('canvas').getContext('webgl')||document.createElement('canvas').getContext('experimental-webgl');
+    if(g){var d=g.getExtension('WEBGL_debug_renderer_info');
+      f.webgl_renderer=d?g.getParameter(d.UNMASKED_RENDERER_WEBGL):'';
+      f.webgl_vendor=d?g.getParameter(d.UNMASKED_VENDOR_WEBGL):'';}
+    else{f.webgl_renderer='';f.webgl_vendor='';}
+  }catch(e){f.webgl_renderer='';f.webgl_vendor='';}
+  try{f.audio_error=!(window.AudioContext||window.webkitAudioContext);}catch(e){f.audio_error=true;}
+  try{sessionStorage.setItem('_t','1');sessionStorage.removeItem('_t');f.session_storage=true;}catch(e){f.session_storage=false;}
+  return f;
+}
+function injectCSS(k,iv,ct){
+  var kb=hx(k),ib=hx(iv),cb=hx(ct);
+  crypto.subtle.importKey('raw',kb,{name:'AES-GCM'},false,['decrypt'])
+    .then(function(key){return crypto.subtle.decrypt({name:'AES-GCM',iv:ib},key,cb);})
+    .then(function(d){var s=document.createElement('style');s.textContent=new TextDecoder().decode(d);document.head.appendChild(s);})
+    .catch(function(){});
+}
+var ck='_css_'+H;
+try{var ca=JSON.parse(sessionStorage.getItem(ck)||'null');if(ca&&ca.k){injectCSS(ca.k,ca.i,ca.t);return;}}catch(e){}
+fetch(A+'/api/fingerprint-key',{
+  method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',
+  body:JSON.stringify({page_hash:H,fingerprint:fp()})
+}).then(function(r){return r.json();})
+  .then(function(d){
+    if(d.success){
+      try{sessionStorage.setItem(ck,JSON.stringify({k:d.aes_key,i:d.iv,t:d.ciphertext}));}catch(e){}
+      injectCSS(d.aes_key,d.iv,d.ciphertext);
+    }
+  }).catch(function(){});
+})();"""
+
+
+@app.route('/api/fingerprint-key', methods=['POST'])
+@limiter.limit("20 per minute")
+def fingerprint_key():
+    """Validate browser fingerprint, return AES-GCM encrypted CSS bundle."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": {"code": "INVALID_JSON", "message": "JSON required"}}), 400
+
+    page_hash = str(data.get("page_hash") or "").strip()
+    fp = data.get("fingerprint") or {}
+
+    if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash) or not isinstance(fp, dict):
+        return jsonify({"success": False, "error": {"code": "MISSING_FIELDS", "message": "page_hash and fingerprint required"}}), 400
+
+    bot_score = score_headless(fp)
+    if bot_score >= HEADLESS_SCORE_THRESHOLD:
+        app.logger.info(f"Fingerprint blocked (score={bot_score}) page={page_hash} ip={request.remote_addr}")
+        return jsonify({"success": False, "error": {"code": "BLOCKED", "message": "Access denied"}}), 403
+
+    r = _redis_client()
+    if not r:
+        return jsonify({"success": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Service unavailable"}}), 503
+
+    css_data = r.get(f"css_bundle:{page_hash}")
+    if not css_data:
+        return jsonify({"success": False, "error": {"code": "CSS_NOT_FOUND", "message": "CSS bundle not available"}}), 404
+
+    css_bytes = css_data.encode("utf-8") if isinstance(css_data, str) else css_data
+    encrypted = encrypt_css(css_bytes)
+    return jsonify({"success": True, **encrypted})
+
+
+@app.route('/api/preview-js', methods=['GET'])
+@limiter.limit("60 per minute")
+def preview_js():
+    """Return minified fingerprint collector + CSS decryptor JS for a preview page."""
+    page_hash = (request.args.get('h') or '').strip()
+    if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash):
+        return '', 400
+
+    js = _PREVIEW_JS.replace('{{page_hash}}', page_hash)
+    response = app.make_response(js)
+    response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
+
+
+# ============================================================
+# Anti-Scraping: CSS bundle storage (localhost only)
+# ============================================================
+
+@app.route('/api/css-bundle', methods=['POST'])
+@require_api_key
+def store_css_bundle():
+    """Store obfuscated CSS bundle in Redis for a page hash.
+
+    Called by deploy_single.sh after Docker build.
+    Localhost-only (enforced by before_request).
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "error": {"code": "INVALID_JSON", "message": "JSON required"}}), 400
+
+    page_hash = str(data.get("page_hash") or "").strip()
+    css_data = data.get("css_data") or ""
+
+    if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash) or not css_data:
+        return jsonify({"success": False, "error": {"code": "MISSING_FIELDS", "message": "page_hash and css_data required"}}), 400
+
+    r = _redis_client()
+    if not r:
+        return jsonify({"success": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Redis unavailable"}}), 503
+
+    ttl = 30 * 24 * 3600  # 30 days
+    r.setex(f"css_bundle:{page_hash}", ttl, css_data)
+    return jsonify({"success": True})
+
 
 if __name__ == '__main__':
     app.run(

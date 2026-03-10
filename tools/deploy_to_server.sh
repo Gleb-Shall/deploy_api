@@ -40,6 +40,7 @@ scp -o ControlPath="$CONTROL_SOCKET" \
   "$SYSTEMD_SRC/docker_pull_images.timer" \
   "$SCRIPT_SRC/seo_submit_google.py" \
   "$SCRIPT_SRC/seo_submit_yandex.py" \
+  "$SCRIPT_SRC/obfuscate_css.js" \
   "$SERVER:/tmp/deploy_api/"
 
 # Опционально, если есть
@@ -63,6 +64,7 @@ cp -f deploy_single.sh deploy_worker.sh install_deploy_workers.sh remove_site.sh
 cp -f post-receive.template "$SCRIPTS/post-receive.tmp" && mv -f "$SCRIPTS/post-receive.tmp" "$SCRIPTS/post-receive"
 cp -f check_deploy_status.sh manage_ports_queue.sh docker_pull_images.sh "$SCRIPTS/"
 cp -f seo_submit_google.py seo_submit_yandex.py "$SCRIPTS/"
+[[ -f obfuscate_css.js ]] && cp -f obfuscate_css.js "$SCRIPTS/" || true
 [[ -f deploy_history.sh ]] && cp -f deploy_history.sh "$SCRIPTS/" || true
 [[ -f diagnose_docker.sh ]] && cp -f diagnose_docker.sh "$SCRIPTS/" && chmod +x "$SCRIPTS/diagnose_docker.sh" || true
 [[ -f get_yandex_oauth_token.py ]] && cp -f get_yandex_oauth_token.py "$SCRIPTS/" || true

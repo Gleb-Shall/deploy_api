@@ -48,6 +48,10 @@ CHALLENGE_TOKEN_TTL = int(os.getenv('CHALLENGE_TOKEN_TTL', '300'))  # seconds
 REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 
+# Anti-scraping: preview protection
+CANARY_REDIRECT_URL = os.getenv('CANARY_REDIRECT_URL', 'https://en.wikipedia.org/wiki/Web_scraping')
+FINGERPRINT_KEY_TTL = int(os.getenv('FINGERPRINT_KEY_TTL', '300'))
+
 # Валидация
 if not BEGET_LOGIN or not BEGET_PASSWORD:
     raise ValueError(
