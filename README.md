@@ -15,14 +15,17 @@ deploy worker → Docker build → контейнер → nginx reverse proxy
 - Кастомные домены через файл `domain` в корне проекта
 - Поддержка pnpm, npm, yarn
 - Интеграция с Google Search Console и Яндекс Индекс
-- Микросервисы: Domain API (доменные проверки) и Screenshot API (скриншоты)
+- Микросервисы: Domain API (доменные проверки + защита от скрейпинга) и Screenshot API (скриншоты)
+- **Многоуровневая защита от парсинга:** CSS обфускация, fingerprinting, canary ссылки, domain lock
 
 ## Структура проекта
 
 ```
 deploy_api/
-├── domain_api/                          # Flask API: проверка доменов через Beget, порт 5000
-│   ├── api.py                           # Flask приложение
+├── domain_api/                          # Flask API: доменные проверки + защита от парсинга, порт 5000
+│   ├── api.py                           # Flask приложение (Beget API, fingerprinting, CSS delivery)
+│   ├── canary.py                        # Canary links для детекции кражи HTML
+│   ├── fingerprint.py                   # Fingerprint scoring + AES-GCM CSS шифрование
 │   ├── beget_client.py                  # Клиент для Beget API
 │   ├── config.py                        # Конфигурация
 │   ├── requirements.txt                 # Python зависимости
@@ -42,7 +45,8 @@ deploy_api/
 │   │   ├── git_wrap.sh                  # SSH forced command: создание репо и пост-receive хук
 │   │   ├── post-receive.template        # Git hook: checkout + очередь + деплой
 │   │   ├── deploy_worker.sh             # Демон очереди Redis (max 2 деплоя одновременно)
-│   │   ├── deploy_single.sh             # Деплой одного сайта (вызывается воркером)
+│   │   ├── deploy_single.sh             # Деплой одного сайта, извлечение CSS bundle
+│   │   ├── obfuscate_css.js             # Node.js скрипт: переименование CSS классов, удаление <style>
 │   │   ├── remove_site.sh               # Удаление сайта (-A для удаления всех)
 │   │   ├── install_deploy_workers.sh    # Установка systemd сервисов для воркеров
 │   │   ├── install_api_services.sh      # Установка systemd сервисов domain_api и screenshot_api
@@ -279,7 +283,157 @@ dig example.com
 
 ---
 
-## Domain API — Проверка доменов (.ru, Beget)
+## Защита от парсинга и кражи HTML
+
+Система состоит из **4 уровней защиты**:
+
+### Уровень 1: Nginx UA-фильтрация и rate limiting
+
+**Файл:** `/server/nginx/antibot.conf` (подключается глобально)
+
+Блокирует известные парсеры по User-Agent:
+- `scrapy, python-requests, python-urllib, libwww-perl, mechanize, curl, nikto`
+- Пустой User-Agent
+- Все скрейпер-сканнеры
+
+Rate limiting (на каждую страницу отдельно):
+- 20 запросов в секунду с одного IP
+- Burst: 50 запросов
+- Ответ 429 за превышение
+
+**Fail2ban действия:**
+- `/_hp_/` (honeypot) → бан на 24 часа
+- 10× ответ 429 за минуту → бан на 1 час
+
+### Уровень 2: CSS обфускация
+
+**Файлы:**
+- `/server/scripts/obfuscate_css.js` — Node.js скрипт переименования CSS классов
+- `/domain_api/api.py` — endpoint `/api/css-bundle` (localhost only)
+
+**Как работает:**
+1. При деплое Docker запускает `obfuscate_css.js`:
+   - Переименовывает все CSS классы: `.button` → `.a1b2c3d4`
+   - Удаляет все `<style>` теги из HTML
+   - Сохраняет CSS bundle в файл `/css_bundle.txt`
+2. `deploy_single.sh` извлекает `css_bundle.txt` из контейнера → хранит в Redis
+3. Браузер загружает чистый HTML **без стилей** → выглядит сломанным
+
+**Результат:** HTML украсть бесполезно — без CSS выглядит как мусор.
+
+### Уровень 3: Canary ссылки (детекция кражи HTML)
+
+**Файл:** `/domain_api/canary.py` — логирование попыток доступа
+
+**Как работает:**
+1. При деплое в HTML инжектируется **5 скрытых ссылок** вида `<a href="/r/<token>" style="display:none"></a>`
+2. Каждая ссылка уникальна и хранит в Redis метаданные (page_hash, IP, UA при генерации)
+3. Если кто-то загруженный HTML, браузер может случайно кликнуть → логируется в Redis:
+   ```json
+   {
+     "token": "abc123...",
+     "page_hash": "xyz789",
+     "referer": "attacker.com",
+     "ip": "attacker-ip",
+     "ua": "attacker-user-agent",
+     "ts": 1699564800
+   }
+   ```
+4. Ссылка редиректит на Wikipedia → не очевидно для пользователя
+
+**Endpoint:** `GET /r/<token>` (nginx: location ~^/r/([a-zA-Z0-9_-]+)$)
+
+### Уровень 4: Fingerprint-based AES-GCM CSS доставка
+
+**Файлы:**
+- `/domain_api/fingerprint.py` — scoring headless сигналов, шифрование AES
+- `/domain_api/api.py` — endpoints `/api/preview-js` и `/api/fingerprint-key`
+
+**Как работает:**
+
+1. **Инжекция preview-js:** nginx через `sub_filter` добавляет в каждую HTML страницу:
+   ```html
+   <script src="/api/preview-js?h=PAGE_HASH"></script>
+   ```
+
+2. **Сбор fingerprint (20+ сигналов):**
+   ```javascript
+   {
+     webdriver: navigator.webdriver,           // 5 pts if true
+     plugins_count: navigator.plugins.length,   // 2 pts if 0
+     pdf_viewer: navigator.pdfViewerEnabled,
+     webgl_renderer: "SwiftShader" || "llvmpipe",  // 3 pts (bot indicator)
+     canvas_hash: <hash>,                      // 2 pts if blank
+     screen_width, screen_height, color_depth,
+     timezone, platform, language,
+     cpu_cores, memory_gb, touch_points,
+     audio_error, session_storage
+   }
+   ```
+
+3. **Валидация и блокировка:**
+   - POST `/api/fingerprint-key` с отправленным fingerprint
+   - Server подсчитывает score. Если score >= 5 → **403 Forbidden**
+   - **Headless браузеры (Playwright, Puppeteer) немедленно блокируются** (`navigator.webdriver=true`)
+
+4. **Шифрование CSS:**
+   - Если валидация пройдена → server шифрует CSS AES-128-GCM
+   - Возвращает: `{aes_key, iv, ciphertext}` (все hex-encoded)
+   - Browser расшифровывает через Web Crypto API → инжектирует `<style>` в DOM
+
+5. **Domain lock:**
+   - `preview-js` проверяет `window.location.hostname`
+   - Если не `automatoria.ru` или `preview.automatoria.ru` → редирект на `https://automatoria.ru`
+   - **Украденный HTML не откроется на другом домене**
+
+**Endpoints:**
+- `GET /api/preview-js?h=PAGE_HASH` — минифицированный JS (публичный)
+- `POST /api/fingerprint-key` — валидация, шифрование CSS (публичный из браузера)
+- `POST /api/css-bundle` — сохранение bundle в Redis (localhost only)
+
+### Уровень 4b: Screenshot bypass для генератора
+
+**Endpoint:** `POST /api/internal/screenshot-token` (localhost only)
+
+**Проблема:** Генератор скриншотов использует Playwright, который имеет `navigator.webdriver=true` → заблокирован на уровне 4.
+
+**Решение:**
+1. Генератор запрашивает одноразовый токен:
+   ```bash
+   token=$(curl -X POST http://127.0.0.1:5000/api/internal/screenshot-token | jq -r .token)
+   ```
+2. Токен хранится в Redis с TTL 120 секунд
+3. Генератор добавляет заголовок `X-Screenshot-Token: <token>` к запросу `/api/fingerprint-key`
+4. Server проверяет токен → пропускает headless проверку
+5. Токен **атомарно удаляется** через `getdel` → повторное использование невозможно
+
+**Интеграция в Playwright:**
+```python
+token = requests.post("http://127.0.0.1:5000/api/internal/screenshot-token").json()["token"]
+await page.route("**/api/fingerprint-key", lambda r: r.continue_(
+    headers={**r.request.headers, "X-Screenshot-Token": token}
+))
+```
+
+### Что защищает и что не защищает
+
+**Защищает от:**
+- ✅ Автоматических скрейперов (scrapy, requests, curl)
+- ✅ Простых headless браузеров (Playwright без stealth-плагина)
+- ✅ Кражи и переиспользования HTML на другом домене
+- ✅ Парсеров, собирающих DOM структуру
+
+**НЕ защищает от:**
+- ❌ Playwright + stealth-плагин (подделывает все fingerprint сигналы)
+- ❌ Cloudflare Bot Management (зарезервировано на случай DDoS)
+- ❌ Ручного копипаста (требует ввода CAPTCHA)
+
+**Следующий уровень защиты:**
+- Cloudflare Bot Management (при необходимости максимальной защиты)
+
+---
+
+## Domain API — Проверка доменов (.ru, Beget) и защита от парсинга
 
 Микросервис для проверки доступности и цены доменов через Beget API. **Опционален** — нужен только если вы хотите проверять домены перед покупкой.
 
@@ -318,7 +472,7 @@ sudo bash /opt/deploy_api/server/scripts/install_api_services.sh
 systemctl status domain-api
 ```
 
-### API Endpoints
+### API Endpoints — Beget
 
 **Проверка домена:**
 
@@ -347,6 +501,33 @@ curl -X POST http://127.0.0.1:5000/api/domain/check \
   }
 }
 ```
+
+### API Endpoints — Anti-Scraping
+
+**GET /api/preview-js?h=PAGE_HASH** — Fingerprint collector + CSS decryptor (публичный)
+- Минифицированный JavaScript, инжектируемый nginx через `sub_filter`
+- Собирает 20+ сигналов браузера, отправляет POST на `/api/fingerprint-key`
+- Включает domain lock (редирект на automatoria.ru)
+
+**POST /api/fingerprint-key** — Валидация fingerprint, шифрование CSS (публичный)
+- Request: `{page_hash: "...", fingerprint: {...}}`
+- Response (при успехе): `{aes_key: "...", iv: "...", ciphertext: "...", success: true}`
+- Ответ 403 если обнаружен headless браузер (webdriver=true)
+- Требует валидный CSS bundle в Redis (установлен при деплое)
+
+**POST /api/css-bundle** — Сохранение CSS bundle в Redis (localhost only, использует API Key)
+- Вызывается `deploy_single.sh` после Docker build
+- Request: `{page_hash: "...", css_data: "..."}`
+- CSS хранится 30 дней
+
+**GET /r/<token>** — Canary redirect (публичный)
+- Логирует referrer → выявляет украденный HTML
+- Редиректит на Wikipedia (CANARY_REDIRECT_URL)
+
+**POST /api/internal/screenshot-token** — Одноразовый bypass для скриншотов (localhost only)
+- Response: `{token: "...", ttl: 120}`
+- Используется генератором скриншотов Playwright
+- Токен сжигается при первом использовании
 
 ### Доступ с другого сервера
 
