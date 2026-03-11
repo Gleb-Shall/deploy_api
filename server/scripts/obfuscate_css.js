@@ -142,8 +142,8 @@ for (const htmlFile of htmlFiles) {
     return `class="${renamed}"`;
   });
 
-  // Remove inline <style> tags (CSS moved to encrypted bundle)
-  html = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+  // Remove inline <style> tags (CSS moved to encrypted bundle), including empty ones
+  html = html.replace(/<style[^>]*>[\s\S]*?<\/style>\s*/gi, '');
 
   // Remove <link rel="stylesheet"> tags
   html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*\/?>/gi, '');

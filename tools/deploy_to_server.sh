@@ -14,6 +14,8 @@ set -e
 SERVER="${DEPLOY_SERVER:-root@45.90.35.151}"
 SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/scripts" && pwd)"
 SYSTEMD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/systemd" && pwd)"
+DOMAIN_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../domain_api" && pwd)"
+NGINX_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/nginx" && pwd)"
 
 # Один сокет на хост — переиспользуем соединение, пароль один раз
 CONTROL_SOCKET="/tmp/deploy_ssh_${SERVER//[^a-zA-Z0-9]/_}_$$"
@@ -48,6 +50,19 @@ scp -o ControlPath="$CONTROL_SOCKET" \
 [[ -f "$SCRIPT_SRC/diagnose_docker.sh" ]] && scp -o ControlPath="$CONTROL_SOCKET" "$SCRIPT_SRC/diagnose_docker.sh" "$SERVER:/tmp/deploy_api/" || true
 [[ -f "$SCRIPT_SRC/get_yandex_oauth_token.py" ]] && scp -o ControlPath="$CONTROL_SOCKET" "$SCRIPT_SRC/get_yandex_oauth_token.py" "$SERVER:/tmp/deploy_api/" || true
 [[ -f "$SCRIPT_SRC/get_google_oauth_token.py" ]] && scp -o ControlPath="$CONTROL_SOCKET" "$SCRIPT_SRC/get_google_oauth_token.py" "$SERVER:/tmp/deploy_api/" || true
+
+# Domain API Python files
+DOMAIN_API_FILES=(
+  "$DOMAIN_API_SRC/api.py"
+  "$DOMAIN_API_SRC/canary.py"
+  "$DOMAIN_API_SRC/fingerprint.py"
+  "$DOMAIN_API_SRC/config.py"
+  "$DOMAIN_API_SRC/requirements.txt"
+)
+scp -o ControlPath="$CONTROL_SOCKET" "${DOMAIN_API_FILES[@]}" "$SERVER:/tmp/deploy_api/"
+
+# Nginx main config
+scp -o ControlPath="$CONTROL_SOCKET" "$NGINX_SRC/deploy_main" "$SERVER:/tmp/deploy_api/"
 
 echo "📥 Установка на сервере..."
 
@@ -84,6 +99,29 @@ chmod 644 /var/log/deploy/deploy.log 2>/dev/null || true
 
 # Перезапуск воркеров
 systemctl restart deploy-worker-1 deploy-worker-2 2>/dev/null || true
+
+# Domain API Python files → /opt/deploy_api/domain_api/
+DOMAIN_API_DIR="/opt/deploy_api/domain_api"
+cp -f api.py canary.py fingerprint.py config.py requirements.txt "$DOMAIN_API_DIR/"
+
+# Install new Python dependency (cryptography)
+if [[ -d "$DOMAIN_API_DIR/venv" ]]; then
+  "$DOMAIN_API_DIR/venv/bin/pip" install -q -r "$DOMAIN_API_DIR/requirements.txt"
+else
+  pip3 install -q -r "$DOMAIN_API_DIR/requirements.txt" 2>/dev/null || true
+fi
+
+# Restart domain-api service to pick up new code
+systemctl restart domain-api 2>/dev/null || true
+echo "Domain API restarted"
+
+# Nginx main config
+if [[ -f /tmp/deploy_api/deploy_main ]]; then
+  cp -f /tmp/deploy_api/deploy_main /etc/nginx/sites-available/deploy_main 2>/dev/null || \
+  cp -f /tmp/deploy_api/deploy_main /etc/nginx/conf.d/deploy_main.conf 2>/dev/null || true
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+  echo "Nginx config updated"
+fi
 
 echo "✅ Готово. Скрипты в $SCRIPTS"
 REMOTE
