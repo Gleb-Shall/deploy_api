@@ -5,12 +5,14 @@
  * Usage: node obfuscate_css.js <dist_dir> <page_hash>
  *
  * What it does:
- *   1. Collects all CSS from dist/_astro/*.css
- *   2. Renames classes to deterministic hashes: _sha256(name+pageHash)[:6]
- *   3. Applies renaming to HTML files (class="..." attributes)
- *   4. Saves CSS bundle to <parent_of_dist>/css_bundle.txt
- *   5. Removes .css files from dist (CSS delivered via fingerprint API)
- *   6. Removes <link rel="stylesheet"> tags from HTML
+ *   1. Collects CSS from both external files (dist/_astro/*.css) AND
+ *      inline <style> tags in HTML (Astro often inlines CSS, no external files)
+ *   2. Renames class selectors to deterministic hashes: _sha256(name+hash)[:6]
+ *   3. Applies renaming to HTML class="..." attributes
+ *   4. Removes <style> tags from HTML (CSS delivered via fingerprint API)
+ *   5. Removes <link rel="stylesheet"> tags from HTML
+ *   6. Removes .css files from dist
+ *   7. Saves obfuscated CSS bundle to <parent_of_dist>/css_bundle.txt
  */
 
 'use strict';
@@ -52,28 +54,36 @@ function findFiles(dir, ext) {
 const cssFiles = findFiles(distDir, '.css');
 const htmlFiles = findFiles(distDir, '.html');
 
-if (cssFiles.length === 0) {
-  console.log('No CSS files found — skipping obfuscation');
-  // Write empty bundle so deploy script doesn't fail
+// ── Collect CSS from external files ──────────────────────────────────────────
+
+const externalCss = cssFiles.map(f => fs.readFileSync(f, 'utf8')).join('\n');
+
+// ── Collect CSS from inline <style> tags in HTML ──────────────────────────────
+// Astro often inlines all CSS directly into <style> tags instead of
+// generating external .css files. We need to handle both cases.
+
+const STYLE_TAG_RE = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+
+let inlineCss = '';
+for (const htmlFile of htmlFiles) {
+  const html = fs.readFileSync(htmlFile, 'utf8');
+  let m;
+  STYLE_TAG_RE.lastIndex = 0;
+  while ((m = STYLE_TAG_RE.exec(html)) !== null) {
+    inlineCss += m[1] + '\n';
+  }
+}
+
+const allCss = externalCss + '\n' + inlineCss;
+
+if (!allCss.trim()) {
+  console.log('No CSS found (external or inline) — writing empty bundle');
   const bundlePath = path.join(path.dirname(distDir), 'css_bundle.txt');
   fs.writeFileSync(bundlePath, '', 'utf8');
   process.exit(0);
 }
 
-// ── Collect CSS ───────────────────────────────────────────────────────────────
-
-const cssBundle = cssFiles.map(f => fs.readFileSync(f, 'utf8')).join('\n');
-
-// ── Extract class names ───────────────────────────────────────────────────────
-
-const classNames = new Set();
-const classRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
-let match;
-while ((match = classRegex.exec(cssBundle)) !== null) {
-  classNames.add(match[1]);
-}
-
-// ── Build obfuscation map ─────────────────────────────────────────────────────
+// ── Build class name obfuscation map ─────────────────────────────────────────
 
 function obfuscateName(name) {
   const hash = crypto
@@ -84,6 +94,13 @@ function obfuscateName(name) {
   return '_' + hash;
 }
 
+const classNames = new Set();
+const classRegex = /\.([a-zA-Z][a-zA-Z0-9_-]*)/g;
+let m;
+while ((m = classRegex.exec(allCss)) !== null) {
+  classNames.add(m[1]);
+}
+
 const classMap = {};
 for (const name of classNames) {
   classMap[name] = obfuscateName(name);
@@ -91,18 +108,21 @@ for (const name of classNames) {
 
 // ── Obfuscate CSS ─────────────────────────────────────────────────────────────
 
-// Replace .className selector occurrences (not inside strings or comments)
-let obfuscatedCss = cssBundle;
-for (const [original, obfuscated] of Object.entries(classMap)) {
-  // Match class selector followed by whitespace, comma, {, :, [, ., +, ~, >
-  const pattern = new RegExp(
-    `\\.${original.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}(?=[\\s,{:#\\[.+~>)])`,
-    'g'
-  );
-  obfuscatedCss = obfuscatedCss.replace(pattern, '.' + obfuscated);
+function obfuscateCss(css) {
+  let result = css;
+  for (const [original, obfuscated] of Object.entries(classMap)) {
+    const pattern = new RegExp(
+      `\\.${original.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}(?=[\\s,{:#\\[.+~>)])`,
+      'g'
+    );
+    result = result.replace(pattern, '.' + obfuscated);
+  }
+  return result;
 }
 
-// ── Save CSS bundle (obfuscated) ──────────────────────────────────────────────
+const obfuscatedCss = obfuscateCss(allCss);
+
+// ── Save CSS bundle ───────────────────────────────────────────────────────────
 
 const bundlePath = path.join(path.dirname(distDir), 'css_bundle.txt');
 fs.writeFileSync(bundlePath, obfuscatedCss, 'utf8');
@@ -112,16 +132,20 @@ fs.writeFileSync(bundlePath, obfuscatedCss, 'utf8');
 for (const htmlFile of htmlFiles) {
   let html = fs.readFileSync(htmlFile, 'utf8');
 
-  // Rename classes in class="..." attributes (handles space-separated lists)
+  // Rename classes in class="..." attributes
   html = html.replace(/class="([^"]*)"/g, (_match, classes) => {
     const renamed = classes
       .split(/\s+/)
+      .filter(Boolean)
       .map(c => classMap[c] || c)
       .join(' ');
     return `class="${renamed}"`;
   });
 
-  // Remove <link rel="stylesheet" ...> tags (CSS served via fingerprint API)
+  // Remove inline <style> tags (CSS moved to encrypted bundle)
+  html = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+
+  // Remove <link rel="stylesheet"> tags
   html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*\/?>/gi, '');
   html = html.replace(/<link[^>]+href=[^>]+\.css[^>]*\/?>/gi, '');
 
@@ -135,7 +159,7 @@ for (const cssFile of cssFiles) {
 }
 
 console.log(
-  `Obfuscated ${classNames.size} classes, ` +
+  `Collected ${classNames.size} classes (${cssFiles.length} external + inline styles), ` +
   `patched ${htmlFiles.length} HTML files, ` +
-  `removed ${cssFiles.length} CSS files`
+  `bundle: ${obfuscatedCss.length} bytes`
 );
