@@ -3,6 +3,7 @@ REST API для работы с доменами через Beget.
 """
 import re
 import hmac
+import secrets
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -23,6 +24,7 @@ from config import (
     REDIS_PORT,
     CANARY_REDIRECT_URL,
     FINGERPRINT_KEY_TTL,
+    SCREENSHOT_TOKEN_TTL,
 )
 from canary import resolve_canary_token, log_canary_hit
 from fingerprint import score_headless, encrypt_css, HEADLESS_SCORE_THRESHOLD
@@ -500,10 +502,29 @@ def fingerprint_key():
     if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash) or not isinstance(fp, dict):
         return jsonify({"success": False, "error": {"code": "MISSING_FIELDS", "message": "page_hash and fingerprint required"}}), 400
 
-    bot_score = score_headless(fp)
-    if bot_score >= HEADLESS_SCORE_THRESHOLD:
-        app.logger.info(f"Fingerprint blocked (score={bot_score}) page={page_hash} ip={request.remote_addr}")
-        return jsonify({"success": False, "error": {"code": "BLOCKED", "message": "Access denied"}}), 403
+    # Screenshot token bypass: skip headless check for our internal Playwright service
+    skip_headless = False
+    screenshot_token = request.headers.get("X-Screenshot-Token", "").strip()
+    if screenshot_token:
+        r_tok = _redis_client()
+        if r_tok:
+            try:
+                consumed = r_tok.getdel(f"screenshot_token:{screenshot_token}")
+            except Exception:
+                # Fallback for Redis < 6.2 without getdel
+                consumed = r_tok.get(f"screenshot_token:{screenshot_token}")
+                if consumed:
+                    r_tok.delete(f"screenshot_token:{screenshot_token}")
+            if consumed:
+                skip_headless = True
+            else:
+                app.logger.warning(f"Invalid/expired screenshot token ip={request.remote_addr}")
+
+    if not skip_headless:
+        bot_score = score_headless(fp)
+        if bot_score >= HEADLESS_SCORE_THRESHOLD:
+            app.logger.info(f"Fingerprint blocked (score={bot_score}) page={page_hash} ip={request.remote_addr}")
+            return jsonify({"success": False, "error": {"code": "BLOCKED", "message": "Access denied"}}), 403
 
     r = _redis_client()
     if not r:
@@ -531,6 +552,27 @@ def preview_js():
     response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
     response.headers['Cache-Control'] = 'public, max-age=3600'
     return response
+
+
+# ============================================================
+# Anti-Scraping: One-time screenshot token (localhost only)
+# ============================================================
+
+@app.route('/api/internal/screenshot-token', methods=['POST'])
+@limiter.limit("30 per minute")
+def create_screenshot_token():
+    """Issue a one-time bypass token for Playwright screenshot service.
+
+    Token is stored in Redis with TTL and consumed atomically on first use.
+    Localhost-only (enforced by before_request → check_local_only).
+    """
+    r = _redis_client()
+    if not r:
+        return jsonify({"success": False, "error": {"code": "SERVICE_UNAVAILABLE", "message": "Redis unavailable"}}), 503
+
+    token = secrets.token_urlsafe(32)
+    r.setex(f"screenshot_token:{token}", SCREENSHOT_TOKEN_TTL, "1")
+    return jsonify({"success": True, "token": token, "ttl": SCREENSHOT_TOKEN_TTL})
 
 
 # ============================================================
