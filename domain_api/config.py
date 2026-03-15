@@ -50,6 +50,10 @@ REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 
 # Anti-scraping: preview protection
 CANARY_REDIRECT_URL = os.getenv('CANARY_REDIRECT_URL', 'https://en.wikipedia.org/wiki/Web_scraping')
+
+# Allowed origins for /api/fingerprint-key (comma-separated, no trailing slash)
+_raw_origins = os.getenv('ALLOWED_ORIGINS', 'https://automatoria.ru,https://preview.automatoria.ru,https://www.automatoria.ru')
+ALLOWED_ORIGINS = tuple(v.strip().rstrip('/') for v in _raw_origins.split(',') if v.strip())
 FINGERPRINT_KEY_TTL = int(os.getenv('FINGERPRINT_KEY_TTL', '300'))
 SCREENSHOT_TOKEN_TTL = int(os.getenv('SCREENSHOT_TOKEN_TTL', '120'))
 

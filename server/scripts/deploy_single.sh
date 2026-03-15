@@ -383,18 +383,27 @@ else
     rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
   fi
 
-  # Generate canary tokens for this preview page
-  CANARY_HTML=""
+  # Generate canary tokens for this preview page.
+  # Tokens stored in Redis under two keys:
+  #   canary:token:<TOKEN>  — metadata (per-token, for hit logging)
+  #   canary:page:<HASH>    — JSON array of tokens (fetched by preview-js API, injected via JS)
+  # Not inserted into HTML — invisible to curl scrapers.
   CANARY_TTL=31536000  # 1 year
+  CANARY_JSON_TOKENS="["
+  CANARY_FIRST=1
   for i in 1 2 3 4 5; do
     CANARY_TOKEN=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null || echo "")
     if [[ -n "$CANARY_TOKEN" ]]; then
       CANARY_META="{\"page_hash\":\"${PAGE_HASH}\",\"created_at\":$(date +%s)}"
       redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" SETEX "canary:token:${CANARY_TOKEN}" "$CANARY_TTL" "$CANARY_META" >/dev/null 2>&1 || true
-      CANARY_HTML="${CANARY_HTML}<a href=https://automatoria.ru/r/${CANARY_TOKEN}></a>"
+      [[ $CANARY_FIRST -eq 1 ]] && CANARY_JSON_TOKENS="${CANARY_JSON_TOKENS}\"${CANARY_TOKEN}\"" \
+                                 || CANARY_JSON_TOKENS="${CANARY_JSON_TOKENS},\"${CANARY_TOKEN}\""
+      CANARY_FIRST=0
     fi
   done
-  log "Canary tokens generated"
+  CANARY_JSON_TOKENS="${CANARY_JSON_TOKENS}]"
+  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" SETEX "canary:page:${PAGE_HASH}" "$CANARY_TTL" "$CANARY_JSON_TOKENS" >/dev/null 2>&1 || true
+  log "Canary tokens generated (stored in Redis, injected via JS)"
 
   cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${PAGE_HASH}
@@ -419,10 +428,8 @@ location /${PAGE_HASH}/ {
     # Anti-scraping injections via sub_filter
     sub_filter_types text/html;
     sub_filter_once on;
-    # Domain lock: redirect to automatoria.ru if HTML is hosted elsewhere
+    # Injects preview-js (fingerprint + PoW + CSS decrypt + canary via JS — not in HTML)
     sub_filter '</head>' '<script src=https://automatoria.ru/api/preview-js?h=${PAGE_HASH}></script></head>';
-    # Canary links: hidden, detect when stolen HTML is opened on another domain
-    sub_filter '</body>' '<span style=display:none aria-hidden=true>${CANARY_HTML}</span></body>';
 }
 
 location = /${PAGE_HASH} {

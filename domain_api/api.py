@@ -25,6 +25,7 @@ from config import (
     CANARY_REDIRECT_URL,
     FINGERPRINT_KEY_TTL,
     SCREENSHOT_TOKEN_TTL,
+    ALLOWED_ORIGINS,
 )
 from canary import resolve_canary_token, log_canary_hit
 from fingerprint import score_headless, encrypt_css, HEADLESS_SCORE_THRESHOLD
@@ -426,66 +427,48 @@ def canary_redirect(token: str):
 # ============================================================
 
 # Minified fingerprint collector + CSS decryptor injected via nginx sub_filter.
-# PAGE_HASH placeholder is replaced per-request in /api/preview-js endpoint.
+# Placeholders replaced per-request in /api/preview-js:
+#   {{page_hash}}      — site hash
+#   {{canary_tokens}}  — JSON array of canary tokens from Redis
 _PREVIEW_JS = r"""(function(){'use strict';
 var H='{{page_hash}}',A='https://automatoria.ru';
-// Domain lock: redirect if HTML is hosted on another domain
 var _h=window.location.hostname;
 if(_h!=='automatoria.ru'&&_h!=='preview.automatoria.ru'&&_h!=='www.automatoria.ru'){window.location.replace('https://automatoria.ru');return;}
 function hx(h){var b=new Uint8Array(h.length/2);for(var i=0;i<h.length;i+=2)b[i/2]=parseInt(h.substr(i,2),16);return b;}
-function fp(){
-  var f={};
-  f.webdriver=!!navigator.webdriver;
-  f.plugins_count=navigator.plugins?navigator.plugins.length:-1;
-  f.pdf_viewer=!!navigator.pdfViewerEnabled;
-  f.language=navigator.language||'';
-  f.platform=navigator.platform||'';
-  f.cpu_cores=navigator.hardwareConcurrency||0;
-  f.memory_gb=navigator.deviceMemory||0;
-  f.touch_points=navigator.maxTouchPoints||0;
-  f.timezone=(Intl.DateTimeFormat().resolvedOptions()||{}).timeZone||'';
-  f.screen_width=screen.width;f.screen_height=screen.height;f.color_depth=screen.colorDepth;
-  try{
-    var c=document.createElement('canvas');c.width=240;c.height=60;
-    var x=c.getContext('2d');x.textBaseline='top';x.font='14px Arial';
-    x.fillStyle='#f60';x.fillRect(125,1,62,20);
-    x.fillStyle='#069';x.fillText('Cwm fjordbank glyphs vext quiz',2,15);
-    x.fillStyle='rgba(102,204,0,0.7)';x.fillText('Cwm fjordbank glyphs vext quiz',4,17);
-    var u=c.toDataURL(),h=0;
-    for(var i=0;i<u.length;i++){h=((h<<5)-h)+u.charCodeAt(i);h|=0;}
-    f.canvas_hash=h.toString(16);f.canvas_blank=u.length<200;
-  }catch(e){f.canvas_hash='';f.canvas_blank=true;}
-  try{
-    var g=document.createElement('canvas').getContext('webgl')||document.createElement('canvas').getContext('experimental-webgl');
-    if(g){var d=g.getExtension('WEBGL_debug_renderer_info');
-      f.webgl_renderer=d?g.getParameter(d.UNMASKED_RENDERER_WEBGL):'';
-      f.webgl_vendor=d?g.getParameter(d.UNMASKED_VENDOR_WEBGL):'';}
-    else{f.webgl_renderer='';f.webgl_vendor='';}
-  }catch(e){f.webgl_renderer='';f.webgl_vendor='';}
-  try{f.audio_error=!(window.AudioContext||window.webkitAudioContext);}catch(e){f.audio_error=true;}
-  try{sessionStorage.setItem('_t','1');sessionStorage.removeItem('_t');f.session_storage=true;}catch(e){f.session_storage=false;}
-  return f;
-}
-function injectCSS(k,iv,ct){
-  var kb=hx(k),ib=hx(iv),cb=hx(ct);
-  crypto.subtle.importKey('raw',kb,{name:'AES-GCM'},false,['decrypt'])
-    .then(function(key){return crypto.subtle.decrypt({name:'AES-GCM',iv:ib},key,cb);})
-    .then(function(d){var s=document.createElement('style');s.textContent=new TextDecoder().decode(d);document.head.appendChild(s);})
-    .catch(function(){});
-}
+function fp(){var f={};f.webdriver=!!navigator.webdriver;f.plugins_count=navigator.plugins?navigator.plugins.length:-1;f.pdf_viewer=!!navigator.pdfViewerEnabled;f.language=navigator.language||'';f.platform=navigator.platform||'';f.cpu_cores=navigator.hardwareConcurrency||0;f.memory_gb=navigator.deviceMemory||0;f.touch_points=navigator.maxTouchPoints||0;f.timezone=(Intl.DateTimeFormat().resolvedOptions()||{}).timeZone||'';f.screen_width=screen.width;f.screen_height=screen.height;f.color_depth=screen.colorDepth;try{var c=document.createElement('canvas');c.width=240;c.height=60;var x=c.getContext('2d');x.textBaseline='top';x.font='14px Arial';x.fillStyle='#f60';x.fillRect(125,1,62,20);x.fillStyle='#069';x.fillText('Cwm fjordbank glyphs vext quiz',2,15);x.fillStyle='rgba(102,204,0,0.7)';x.fillText('Cwm fjordbank glyphs vext quiz',4,17);var u=c.toDataURL(),h=0;for(var i=0;i<u.length;i++){h=((h<<5)-h)+u.charCodeAt(i);h|=0;}f.canvas_hash=h.toString(16);f.canvas_blank=u.length<200;}catch(e){f.canvas_hash='';f.canvas_blank=true;}try{var g=document.createElement('canvas').getContext('webgl')||document.createElement('canvas').getContext('experimental-webgl');if(g){var d=g.getExtension('WEBGL_debug_renderer_info');f.webgl_renderer=d?g.getParameter(d.UNMASKED_RENDERER_WEBGL):'';f.webgl_vendor=d?g.getParameter(d.UNMASKED_VENDOR_WEBGL):'';}else{f.webgl_renderer='';f.webgl_vendor='';}}catch(e){f.webgl_renderer='';f.webgl_vendor='';}try{f.audio_error=!(window.AudioContext||window.webkitAudioContext);}catch(e){f.audio_error=true;}try{sessionStorage.setItem('_t','1');sessionStorage.removeItem('_t');f.session_storage=true;}catch(e){f.session_storage=false;}return f;}
+function injectCSS(k,iv,ct){var kb=hx(k),ib=hx(iv),cb=hx(ct);crypto.subtle.importKey('raw',kb,{name:'AES-GCM'},false,['decrypt']).then(function(key){return crypto.subtle.decrypt({name:'AES-GCM',iv:ib},key,cb);}).then(function(d){var s=document.createElement('style');s.textContent=new TextDecoder().decode(d);document.head.appendChild(s);}).catch(function(){});}
+async function sp(c,d){var p='0'.repeat(d),e=new TextEncoder();for(var n=0;n<1e7;n++){var b=await crypto.subtle.digest('SHA-256',e.encode(c+n));var x=Array.from(new Uint8Array(b)).map(function(v){return v.toString(16).padStart(2,'0');}).join('');if(x.startsWith(p))return n;}return null;}
+function ic(ts){if(!ts||!ts.length)return;var d=document.createElement('div');d.style.cssText='position:absolute;overflow:hidden;width:0;height:0';d.setAttribute('aria-hidden','true');ts.forEach(function(t){var a=document.createElement('a');a.href=A+'/r/'+t;d.appendChild(a);});if(document.body)document.body.appendChild(d);else document.addEventListener('DOMContentLoaded',function(){document.body&&document.body.appendChild(d);});}
+ic({{canary_tokens}});
 var ck='_css_'+H;
 try{var ca=JSON.parse(sessionStorage.getItem(ck)||'null');if(ca&&ca.k){injectCSS(ca.k,ca.i,ca.t);return;}}catch(e){}
-fetch(A+'/api/fingerprint-key',{
-  method:'POST',headers:{'Content-Type':'application/json'},credentials:'omit',
-  body:JSON.stringify({page_hash:H,fingerprint:fp()})
-}).then(function(r){return r.json();})
-  .then(function(d){
-    if(d.success){
-      try{sessionStorage.setItem(ck,JSON.stringify({k:d.aes_key,i:d.iv,t:d.ciphertext}));}catch(e){}
-      injectCSS(d.aes_key,d.iv,d.ciphertext);
-    }
-  }).catch(function(){});
+(async function(){try{
+var ct='';
+try{var cr=await fetch(A+'/api/challenge').then(function(r){return r.json();});if(cr&&cr.success){var nonce=await sp(cr.challenge,cr.difficulty);if(nonce!==null){var tr=await fetch(A+'/api/challenge-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({challenge:cr.challenge,nonce:nonce})}).then(function(r){return r.json();});if(tr&&tr.success)ct=tr.token;}}}catch(e){}
+var hd={'Content-Type':'application/json'};if(ct)hd['X-Challenge-Token']=ct;
+var d=await fetch(A+'/api/fingerprint-key',{method:'POST',headers:hd,credentials:'omit',body:JSON.stringify({page_hash:H,fingerprint:fp()})}).then(function(r){return r.json();});
+if(d.success){try{sessionStorage.setItem(ck,JSON.stringify({k:d.aes_key,i:d.iv,t:d.ciphertext}));}catch(e){}injectCSS(d.aes_key,d.iv,d.ciphertext);}
+}catch(e){}})();
 })();"""
+
+
+def _allowed_origin(skip: bool) -> bool:
+    """Return True if request Origin/Referer is from an allowed domain.
+
+    Always True when skip=True (screenshot bypass).
+    Always True for requests from localhost (internal calls).
+    """
+    if skip:
+        return True
+    # Internal Playwright / deploy scripts call the API directly on localhost
+    remote = request.environ.get("REMOTE_ADDR", "")
+    if remote in ("127.0.0.1", "::1"):
+        return True
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin:
+        return any(origin == o for o in ALLOWED_ORIGINS)
+    referer = request.headers.get("Referer") or ""
+    return any(referer.startswith(o) for o in ALLOWED_ORIGINS)
 
 
 @app.route('/api/fingerprint-key', methods=['POST'])
@@ -502,7 +485,7 @@ def fingerprint_key():
     if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash) or not isinstance(fp, dict):
         return jsonify({"success": False, "error": {"code": "MISSING_FIELDS", "message": "page_hash and fingerprint required"}}), 400
 
-    # Screenshot token bypass: skip headless check for our internal Playwright service
+    # Screenshot token bypass: skip headless/origin/challenge checks for internal Playwright
     skip_headless = False
     screenshot_token = request.headers.get("X-Screenshot-Token", "").strip()
     if screenshot_token:
@@ -519,6 +502,26 @@ def fingerprint_key():
                 skip_headless = True
             else:
                 app.logger.warning(f"Invalid/expired screenshot token ip={request.remote_addr}")
+
+    # Origin/Referer validation: block requests not coming from our domain
+    if not _allowed_origin(skip_headless):
+        app.logger.info(f"Fingerprint blocked (bad origin) page={page_hash} ip={request.remote_addr} "
+                        f"origin={request.headers.get('Origin')} referer={request.headers.get('Referer')}")
+        return jsonify({"success": False, "error": {"code": "BLOCKED", "message": "Access denied"}}), 403
+
+    # PoW challenge token validation (skip for screenshot bypass)
+    if not skip_headless and CHALLENGE_SECRET:
+        challenge_token = request.headers.get("X-Challenge-Token", "").strip()
+        if not challenge_token:
+            return jsonify({"success": False, "error": {"code": "CHALLENGE_REQUIRED", "message": "Challenge token required"}}), 403
+        try:
+            payload = pyjwt.decode(challenge_token, CHALLENGE_SECRET, algorithms=["HS256"])
+            if payload.get("sub") != "antibot":
+                raise pyjwt.InvalidTokenError("invalid sub")
+        except pyjwt.ExpiredSignatureError:
+            return jsonify({"success": False, "error": {"code": "CHALLENGE_EXPIRED", "message": "Challenge token expired"}}), 403
+        except pyjwt.InvalidTokenError:
+            return jsonify({"success": False, "error": {"code": "CHALLENGE_INVALID", "message": "Invalid challenge token"}}), 403
 
     if not skip_headless:
         bot_score = score_headless(fp)
@@ -542,15 +545,30 @@ def fingerprint_key():
 @app.route('/api/preview-js', methods=['GET'])
 @limiter.limit("60 per minute")
 def preview_js():
-    """Return minified fingerprint collector + CSS decryptor JS for a preview page."""
+    """Return minified fingerprint collector + CSS decryptor JS for a preview page.
+
+    Canary tokens are fetched from Redis and embedded directly in the JS response
+    so they never appear in the static HTML (invisible to curl scrapers).
+    Cache-Control: no-store because canary tokens rotate on every deploy.
+    """
     page_hash = (request.args.get('h') or '').strip()
     if not page_hash or not re.match(r'^[a-zA-Z0-9_-]+$', page_hash):
         return '', 400
 
-    js = _PREVIEW_JS.replace('{{page_hash}}', page_hash)
+    canary_tokens = '[]'
+    r = _redis_client()
+    if r:
+        try:
+            raw = r.get(f"canary:page:{page_hash}")
+            if raw:
+                canary_tokens = raw
+        except Exception:
+            pass
+
+    js = _PREVIEW_JS.replace('{{page_hash}}', page_hash).replace('{{canary_tokens}}', canary_tokens)
     response = app.make_response(js)
     response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
-    response.headers['Cache-Control'] = 'public, max-age=3600'
+    response.headers['Cache-Control'] = 'no-store'
     return response
 
 

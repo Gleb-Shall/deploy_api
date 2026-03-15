@@ -15,6 +15,7 @@ SERVER="${DEPLOY_SERVER:-root@45.90.35.151}"
 SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/scripts" && pwd)"
 SYSTEMD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/systemd" && pwd)"
 DOMAIN_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../domain_api" && pwd)"
+SCREENSHOT_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../screenshot_api" && pwd)"
 NGINX_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/nginx" && pwd)"
 
 # Один сокет на хост — переиспользуем соединение, пароль один раз
@@ -60,6 +61,11 @@ DOMAIN_API_FILES=(
   "$DOMAIN_API_SRC/requirements.txt"
 )
 scp -o ControlPath="$CONTROL_SOCKET" "${DOMAIN_API_FILES[@]}" "$SERVER:/tmp/deploy_api/"
+
+# Screenshot API Python files
+scp -o ControlPath="$CONTROL_SOCKET" \
+  "$SCREENSHOT_API_SRC/api.py" \
+  "$SERVER:/tmp/deploy_api/screenshot_api.py"
 
 # Nginx main config
 scp -o ControlPath="$CONTROL_SOCKET" "$NGINX_SRC/deploy_main" "$SERVER:/tmp/deploy_api/"
@@ -114,6 +120,14 @@ fi
 # Restart domain-api service to pick up new code
 systemctl restart domain-api 2>/dev/null || true
 echo "Domain API restarted"
+
+# Screenshot API Python files → /opt/deploy_api/screenshot_api/
+SCREENSHOT_API_DIR="/opt/deploy_api/screenshot_api"
+if [[ -d "$SCREENSHOT_API_DIR" ]]; then
+  cp -f screenshot_api.py "$SCREENSHOT_API_DIR/api.py"
+  systemctl restart screenshot-api 2>/dev/null || true
+  echo "Screenshot API restarted"
+fi
 
 # Nginx main config
 if [[ -f /tmp/deploy_api/deploy_main ]]; then

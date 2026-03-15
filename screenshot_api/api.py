@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import re
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from functools import wraps
@@ -66,6 +67,30 @@ def require_api_key(f):
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = SCREENSHOT_MAX_UPLOAD_BYTES
+
+
+DOMAIN_API_URL = os.getenv("DOMAIN_API_URL", "http://127.0.0.1:5000")
+
+
+@app.post("/api/screenshot-token")
+@require_api_key
+def get_screenshot_token():
+    """
+    Получить одноразовый токен для обхода fingerprint-защиты при скриншоте.
+    Проксирует запрос к domain_api /api/internal/screenshot-token.
+    Ответ: { "success": true, "token": "...", "ttl": 120 }
+    """
+    try:
+        req = urllib.request.Request(
+            f"{DOMAIN_API_URL}/api/internal/screenshot-token",
+            data=b"",
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode())
+        return jsonify(body)
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"domain_api unavailable: {exc}"}), 502
 
 
 @app.get("/health")

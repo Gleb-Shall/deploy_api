@@ -67,9 +67,58 @@ sudo chmod 600 /opt/deploy_api/domain_api/.env
 
 ## API
 
-- **POST /api/domain/check** — проверка домена. Тело: `{"domain": "example.ru", "period": 1}`. Возвращает доступность и цену. Регистрация доменов через Beget API недоступна (только добавление уже зарегистрированных).
+Все защищённые эндпоинты требуют заголовок `X-API-Key` (если задан `API_KEY` в `.env`).
 
-Заголовок `X-API-Key` или параметр `api_key` — если в .env задан API_KEY.
+### Домены
+
+**POST /api/domain/check** — проверка доступности домена.
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/domain/check \
+  -H "X-API-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "example.ru", "period": 1}'
+```
+
+Ответ:
+```json
+{"success": true, "available": true, "domain": "example.ru", "price": 199, "currency": "RUR"}
+```
+
+---
+
+### Медиа (картинки от чат-бота)
+
+Хранятся в `MEDIA_STORAGE_DIR` (дефолт `/opt/deploy/media`).
+Публичный URL: `MEDIA_PUBLIC_URL/picture/<id>` (дефолт `https://media.automatoria.ru`).
+
+**POST /api/media/upload** — загрузка картинки.
+
+```bash
+curl -X POST http://127.0.0.1:5000/api/media/upload \
+  -H "X-API-Key: YOUR_KEY" \
+  -F "file=@/path/to/image.png"
+```
+
+Ответ:
+```json
+{"success": true, "data": {"id": "a1b2c3d4...", "url": "https://media.automatoria.ru/picture/a1b2c3d4..."}}
+```
+
+**GET /picture/\<id\>** — получить картинку (публичный, без ключа).
+
+```bash
+curl https://media.automatoria.ru/picture/a1b2c3d4...
+```
+
+**DELETE /api/media/picture/\<id\>** — удалить картинку.
+
+```bash
+curl -X DELETE http://127.0.0.1:5000/api/media/picture/a1b2c3d4... \
+  -H "X-API-Key: YOUR_KEY"
+```
+
+Ответ: `{"success": true}`
 
 ## Безопасность
 
