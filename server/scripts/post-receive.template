@@ -83,7 +83,7 @@ while read oldrev newrev refname; do
     log "Dockerfile: pnpm + BuildKit"
     # Подстановки: __PAGE_HASH__, __CUSTOM_DOMAIN__ (для проверки sitemap при кастомном домене)
     sed -e "s/__PAGE_HASH__/$PAGE_HASH/g" -e "s|__CUSTOM_DOMAIN__|${CUSTOM_DOMAIN_LINE:-}|g" << 'DOCKERFILE' > "$WORK_TREE/Dockerfile"
-ARG NODE_IMAGE=deploy-node:20-alpine
+ARG NODE_IMAGE=deploy-node:22-alpine
 ARG NGINX_IMAGE=deploy-nginx:alpine
 FROM ${NODE_IMAGE} AS builder
 RUN corepack enable && corepack prepare pnpm@10.29.3 --activate

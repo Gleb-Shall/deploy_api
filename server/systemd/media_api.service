@@ -1,0 +1,16 @@
+[Unit]
+Description=Media API (file upload: images, PDF pages, DOCX text)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/deploy_api/media_api
+ExecStart=/opt/deploy_api/media_api/venv/bin/python api.py
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

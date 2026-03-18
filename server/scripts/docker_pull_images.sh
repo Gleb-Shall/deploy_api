@@ -20,6 +20,6 @@ pull_and_tag() {
   fi
 }
 
-pull_and_tag "node:20-alpine" "deploy-node:20-alpine"
+pull_and_tag "node:22-alpine" "deploy-node:22-alpine"
 pull_and_tag "nginx:alpine"   "deploy-nginx:alpine"
 log "Done."

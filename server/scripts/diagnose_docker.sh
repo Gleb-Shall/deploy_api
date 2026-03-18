@@ -17,7 +17,7 @@ echo "Docker info (builder):"
 docker buildx ls 2>&1 || true
 echo ""
 echo "Base images (локальные теги — Docker не ходит в registry за metadata):"
-for img in deploy-node:20-alpine deploy-nginx:alpine; do
+for img in deploy-node:22-alpine deploy-nginx:alpine; do
   if docker image inspect "$img" >/dev/null 2>&1; then
     echo "  $img — в кэше"
   else

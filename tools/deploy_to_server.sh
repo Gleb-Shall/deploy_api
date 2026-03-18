@@ -16,6 +16,7 @@ SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/scripts" && pwd)"
 SYSTEMD_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/systemd" && pwd)"
 DOMAIN_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../domain_api" && pwd)"
 SCREENSHOT_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../screenshot_api" && pwd)"
+MEDIA_API_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../media_api" && pwd)"
 NGINX_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../server/nginx" && pwd)"
 
 # Один сокет на хост — переиспользуем соединение, пароль один раз
@@ -41,6 +42,7 @@ scp -o ControlPath="$CONTROL_SOCKET" \
   "$SCRIPT_SRC/docker_pull_images.sh" \
   "$SYSTEMD_SRC/docker_pull_images.service" \
   "$SYSTEMD_SRC/docker_pull_images.timer" \
+  "$SYSTEMD_SRC/media_api.service" \
   "$SCRIPT_SRC/seo_submit_google.py" \
   "$SCRIPT_SRC/seo_submit_yandex.py" \
   "$SCRIPT_SRC/obfuscate_css.js" \
@@ -66,6 +68,16 @@ scp -o ControlPath="$CONTROL_SOCKET" "${DOMAIN_API_FILES[@]}" "$SERVER:/tmp/depl
 scp -o ControlPath="$CONTROL_SOCKET" \
   "$SCREENSHOT_API_SRC/api.py" \
   "$SERVER:/tmp/deploy_api/screenshot_api.py"
+
+# Media API Python files
+ssh -o ControlPath="$CONTROL_SOCKET" "$SERVER" "mkdir -p /tmp/deploy_api/media_api"
+scp -o ControlPath="$CONTROL_SOCKET" \
+  "$MEDIA_API_SRC/api.py" \
+  "$MEDIA_API_SRC/storage.py" \
+  "$MEDIA_API_SRC/processors.py" \
+  "$MEDIA_API_SRC/config.py" \
+  "$MEDIA_API_SRC/requirements.txt" \
+  "$SERVER:/tmp/deploy_api/media_api/"
 
 # Nginx main config
 scp -o ControlPath="$CONTROL_SOCKET" "$NGINX_SRC/deploy_main" "$SERVER:/tmp/deploy_api/"
@@ -128,6 +140,28 @@ if [[ -d "$SCREENSHOT_API_DIR" ]]; then
   systemctl restart screenshot-api 2>/dev/null || true
   echo "Screenshot API restarted"
 fi
+
+# Media API Python files → /opt/deploy_api/media_api/
+MEDIA_API_DIR="/opt/deploy_api/media_api"
+mkdir -p "$MEDIA_API_DIR"
+cp -f /tmp/deploy_api/media_api/api.py \
+      /tmp/deploy_api/media_api/storage.py \
+      /tmp/deploy_api/media_api/processors.py \
+      /tmp/deploy_api/media_api/config.py \
+      /tmp/deploy_api/media_api/requirements.txt \
+      "$MEDIA_API_DIR/"
+# Создаём venv при первом деплое, затем обновляем зависимости
+if [[ ! -d "$MEDIA_API_DIR/venv" ]]; then
+  python3 -m venv "$MEDIA_API_DIR/venv"
+fi
+"$MEDIA_API_DIR/venv/bin/pip" install -q --upgrade pip
+"$MEDIA_API_DIR/venv/bin/pip" install -q -r "$MEDIA_API_DIR/requirements.txt"
+cp -f /tmp/deploy_api/media_api.service /etc/systemd/system/ 2>/dev/null || \
+  cp -f media_api.service /etc/systemd/system/ 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable media_api 2>/dev/null || true
+systemctl restart media_api 2>/dev/null || true
+echo "Media API restarted"
 
 # Nginx main config
 if [[ -f /tmp/deploy_api/deploy_main ]]; then

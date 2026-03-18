@@ -14,9 +14,6 @@ from config import (
     API_DEBUG,
     API_KEY,
     MAX_DOMAIN_PRICE,
-    MEDIA_STORAGE_DIR,
-    MEDIA_MAX_UPLOAD_BYTES,
-    MEDIA_PUBLIC_URL,
     CHALLENGE_SECRET,
     CHALLENGE_DIFFICULTY,
     CHALLENGE_TOKEN_TTL,
@@ -30,14 +27,11 @@ from config import (
 from canary import resolve_canary_token, log_canary_hit
 from fingerprint import score_headless, encrypt_css, HEADLESS_SCORE_THRESHOLD
 from beget_client import BegetClient, BegetAPIError
-from flask import send_file
 import traceback
 import hashlib
 import time
 import redis as redis_lib
 import jwt as pyjwt
-
-from media_storage import save_picture, get_picture_paths, delete_picture
 
 # Валидация: домен .ru (в т.ч. sub.example.ru), период 1–10 лет
 DOMAIN_RU_RE = re.compile(r"^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+ru$", re.IGNORECASE)
@@ -46,7 +40,7 @@ PERIOD_MIN, PERIOD_MAX = 1, 10
 client = BegetClient()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = MEDIA_MAX_UPLOAD_BYTES
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB для JSON-запросов
 # Отключаем CORS полностью - API только для локального использования
 # CORS(app)  # Закомментировано для безопасности
 
@@ -230,61 +224,6 @@ def check_domain():
                 'message': str(e)
             }
         }), 500
-
-
-# --- Медиа (картинки от чат-бота) на том же порту 5000 ---
-
-
-@app.route('/api/media/upload', methods=['POST'])
-@limiter.limit("60 per minute")
-@require_api_key
-def media_upload():
-    """
-    Загрузка картинки (multipart/form-data, поле file).
-    Ответ: { "success": true, "data": { "id": "...", "url": "https://media.../picture/<id>" } }
-    """
-    if "file" not in request.files:
-        return jsonify({"success": False, "error": {"code": "MISSING_FILE", "message": "Поле file обязательно"}}), 400
-    file = request.files["file"]
-    if not file or not file.filename:
-        return jsonify({"success": False, "error": {"code": "INVALID_FILE", "message": "Файл не выбран"}}), 400
-    mime = (file.mimetype or "").lower().strip()
-    if not mime.startswith("image/"):
-        return jsonify({"success": False, "error": {"code": "UNSUPPORTED_TYPE", "message": "Только изображения"}}), 400
-    content = file.read()
-    if not content:
-        return jsonify({"success": False, "error": {"code": "EMPTY_FILE", "message": "Файл пустой"}}), 400
-    try:
-        pic_id, _, _, _ = save_picture(MEDIA_STORAGE_DIR, content, mime, file.filename)
-    except Exception as e:
-        app.logger.error(f"Media save error: {traceback.format_exc()}")
-        return jsonify({"success": False, "error": {"code": "SAVE_ERROR", "message": str(e)}}), 500
-    return jsonify({
-        "success": True,
-        "data": {"id": pic_id, "url": f"{MEDIA_PUBLIC_URL}/picture/{pic_id}"},
-    })
-
-
-@app.route('/api/media/picture/<pic_id>', methods=['DELETE'])
-@limiter.limit("30 per minute")
-@require_api_key
-def delete_media_picture(pic_id):
-    """Удаление картинки по id. Ответ: { "success": true } или 404."""
-    if delete_picture(MEDIA_STORAGE_DIR, pic_id):
-        return jsonify({"success": True})
-    return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "Картинка не найдена"}}), 404
-
-
-@app.route('/picture/<pic_id>', methods=['GET'])
-def get_picture(pic_id):
-    """Отдача картинки по id (для media.automatoria.ru/picture/<id>)."""
-    info = get_picture_paths(MEDIA_STORAGE_DIR, pic_id)
-    if not info:
-        return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "Картинка не найдена"}}), 404
-    resp = send_file(info["path"], mimetype=info["mime"], conditional=True, max_age=31536000)
-    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    return resp
-
 
 
 

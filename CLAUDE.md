@@ -17,6 +17,7 @@ git push → post-receive hook → Redis queue → deploy worker → Docker buil
 deploy_api/
 ├── domain_api/       — Flask API, порт 5000 (домены Beget + JS challenge антибот)
 ├── screenshot_api/   — Flask API, порт 5051 (скриншоты Playwright)
+├── media_api/        — Flask API, порт 5052 (файлы чат-бота: image/PDF→PNG/DOCX→TXT)
 ├── server/
 │   ├── scripts/      — bash/python скрипты сервера
 │   ├── nginx/        — nginx конфиги (antibot.conf, deploy_main)
@@ -30,7 +31,8 @@ deploy_api/
 
 ## Сервер — текущее состояние
 
-**Сервис domain-api:** `systemctl status domain-api` (active)
+**Сервис domain-api:** `systemctl status domain-api` (active, порт 5000)
+**Сервис media_api:** `systemctl status media_api` (active, порт 5052)
 **Конфиги nginx:** `/etc/nginx/sites-available/deploy/*.conf` (по одному на сайт)
 **Кастомные домены:** `/etc/nginx/sites-available/deploy/custom/*.conf`
 **Очередь деплоя:** Redis, два воркера (`deploy-worker-1`, `deploy-worker-2`)

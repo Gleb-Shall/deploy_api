@@ -85,40 +85,8 @@ curl -X POST http://127.0.0.1:5000/api/domain/check \
 {"success": true, "available": true, "domain": "example.ru", "price": 199, "currency": "RUR"}
 ```
 
----
 
-### Медиа (картинки от чат-бота)
-
-Хранятся в `MEDIA_STORAGE_DIR` (дефолт `/opt/deploy/media`).
-Публичный URL: `MEDIA_PUBLIC_URL/picture/<id>` (дефолт `https://media.automatoria.ru`).
-
-**POST /api/media/upload** — загрузка картинки.
-
-```bash
-curl -X POST http://127.0.0.1:5000/api/media/upload \
-  -H "X-API-Key: YOUR_KEY" \
-  -F "file=@/path/to/image.png"
-```
-
-Ответ:
-```json
-{"success": true, "data": {"id": "a1b2c3d4...", "url": "https://media.automatoria.ru/picture/a1b2c3d4..."}}
-```
-
-**GET /picture/\<id\>** — получить картинку (публичный, без ключа).
-
-```bash
-curl https://media.automatoria.ru/picture/a1b2c3d4...
-```
-
-**DELETE /api/media/picture/\<id\>** — удалить картинку.
-
-```bash
-curl -X DELETE http://127.0.0.1:5000/api/media/picture/a1b2c3d4... \
-  -H "X-API-Key: YOUR_KEY"
-```
-
-Ответ: `{"success": true}`
+> **Медиа-файлы (изображения, PDF, DOCX)** вынесены в отдельный сервис — см. `media_api/README.md`.
 
 ## Безопасность
 

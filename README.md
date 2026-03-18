@@ -15,7 +15,7 @@ deploy worker → Docker build → контейнер → nginx reverse proxy
 - Кастомные домены через файл `domain` в корне проекта
 - Поддержка pnpm, npm, yarn
 - Интеграция с Google Search Console и Яндекс Индекс
-- Микросервисы: Domain API (доменные проверки + защита от скрейпинга) и Screenshot API (скриншоты)
+- Микросервисы: Domain API (домены + защита от скрейпинга), Screenshot API (скриншоты), Media API (файлы от чат-бота: изображения, PDF→PNG, DOCX→TXT)
 - **Многоуровневая защита от парсинга:** CSS обфускация, fingerprinting, canary ссылки, domain lock
 
 ## Структура проекта
@@ -38,6 +38,14 @@ deploy_api/
 │   ├── requirements.txt                 # Python зависимости
 │   ├── .env.example                     # Шаблон окружения
 │   └── README.md                        # Документация Screenshot API
+│
+├── media_api/                           # Flask API: файлы от чат-бота, порт 5052
+│   ├── api.py                           # Flask приложение
+│   ├── storage.py                       # Хранение файлов на диске
+│   ├── processors.py                    # PDF→PNG (pymupdf), DOCX→TXT (python-docx)
+│   ├── config.py                        # Конфигурация
+│   ├── requirements.txt                 # Python зависимости
+│   └── README.md                        # Документация Media API (для чат-бота)
 │
 ├── server/                              # Серверная часть (scripts, configs, docs)
 │   ├── scripts/                         # Bash/Python скрипты деплоя
@@ -251,8 +259,9 @@ dig example.com
 | Путь | Содержимое |
 |------|-----------|
 | `/opt/deploy_api/scripts/` | Bash/Python скрипты деплоя |
-| `/opt/deploy_api/domain_api/` | Domain API (Flask) |
-| `/opt/deploy_api/screenshot_api/` | Screenshot API (Flask) |
+| `/opt/deploy_api/domain_api/` | Domain API (Flask, порт 5000) |
+| `/opt/deploy_api/screenshot_api/` | Screenshot API (Flask, порт 5051) |
+| `/opt/deploy_api/media_api/` | Media API (Flask, порт 5052) |
 | `/opt/deploy/` | Worktrees и Docker контейнеры сайтов |
 | `/opt/deploy/media/` | Медиа файлы от API |
 | `/opt/deploy/screenshots/` | Скриншоты от API |
@@ -580,25 +589,25 @@ curl -X GET http://127.0.0.1:5051/screenshot/SCREENSHOT_ID
 
 ---
 
-## Медиа (картинки, загруженные через API)
+## Media API — файлы от чат-бота
 
-Загруженные медиа файлы сохраняются в `/opt/deploy/media/` и доступны через nginx:
+Отдельный микросервис на порту 5052. Поддерживает изображения, PDF (→ PNG по страницам) и DOCX (→ TXT).
 
 **Загрузка:**
 
 ```bash
-curl -X POST http://127.0.0.1:5000/api/media/upload \
+curl -X POST https://media.automatoria.ru/api/media/upload \
   -H "X-API-Key: YOUR_API_KEY" \
-  -F "file=@image.jpg"
+  -F "file=@image.jpg"       # или document.pdf / contract.docx
 ```
 
 **Просмотр:**
 
 ```
-https://YOUR_DOMAIN/media/picture/{id}
+https://media.automatoria.ru/file/{id}
 ```
 
-Nginx проксирует запросы на Domain API (порт 5000).
+**Подробнее:** `media_api/README.md`
 
 ---
 
