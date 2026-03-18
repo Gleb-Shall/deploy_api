@@ -2,23 +2,27 @@
 
 Отдельный микросервис для загрузки, хранения и выдачи файлов. Используется чат-ботом для работы с вложениями.
 
-- **Порт:** 5052 (только `127.0.0.1` — не открыт в интернет)
-- **Доступ:** только с сервера напрямую или через SSH-туннель
+| | Доступ |
+|--|--------|
+| **Просмотр файлов** `GET /file/<id>` | Публичный — `https://media.automatoria.ru/file/<id>` |
+| **Загрузка / удаление** `POST /api/media/upload`, `DELETE /api/media/file/<id>` | Только локально — `http://127.0.0.1:5052` |
+
 - **Auth:** заголовок `X-API-Key` (тот же ключ что у domain_api)
 
-## Доступ через SSH-туннель
+## Доступ к управлению (upload / delete)
 
-Если чат-бот работает на другой машине:
+Эндпоинты управления доступны только с самого сервера или через SSH-туннель — снаружи возвращают 403.
 
-```bash
-# Пробросить порт 5052 с сервера на локальную машину
-ssh -N -L 5052:127.0.0.1:5052 root@45.90.35.151
-
-# Теперь обращаться как к локальному сервису
-curl -X POST http://127.0.0.1:5052/api/media/upload ...
+**Если чат-бот на том же сервере** — обращайся напрямую:
+```
+http://127.0.0.1:5052/api/media/upload
 ```
 
-Если чат-бот на том же сервере — просто используй `http://127.0.0.1:5052` напрямую.
+**Если чат-бот на другой машине** — пробрось порт:
+```bash
+ssh -N -L 5052:127.0.0.1:5052 root@45.90.35.151
+# Теперь доступно как http://127.0.0.1:5052/api/media/upload
+```
 
 ## Поддерживаемые типы файлов
 
@@ -58,7 +62,7 @@ MEDIA_PUBLIC_URL=https://media.automatoria.ru
 
 ## API для чат-бота
 
-Все примеры используют `http://127.0.0.1:5052` — напрямую с сервера или через SSH-туннель.
+Загрузка — через `127.0.0.1:5052`. URL файлов в ответах — публичные `https://media.automatoria.ru/file/...`, их можно сразу отправлять пользователям.
 
 ---
 
@@ -80,7 +84,7 @@ curl -X POST http://127.0.0.1:5052/api/media/upload \
   "success": true,
   "data": {
     "type": "image",
-    "url": "http://127.0.0.1:5052/file/a1b2c3d4e5f6..."
+    "url": "https://media.automatoria.ru/file/a1b2c3d4e5f6..."
   }
 }
 ```
@@ -102,9 +106,9 @@ curl -X POST http://127.0.0.1:5052/api/media/upload \
   "data": {
     "type": "pdf_pages",
     "pages": [
-      {"page": 1, "url": "http://127.0.0.1:5052/file/aa11bb22..."},
-      {"page": 2, "url": "http://127.0.0.1:5052/file/cc33dd44..."},
-      {"page": 3, "url": "http://127.0.0.1:5052/file/ee55ff66..."}
+      {"page": 1, "url": "https://media.automatoria.ru/file/aa11bb22..."},
+      {"page": 2, "url": "https://media.automatoria.ru/file/cc33dd44..."},
+      {"page": 3, "url": "https://media.automatoria.ru/file/ee55ff66..."}
     ]
   }
 }
@@ -117,8 +121,10 @@ curl -X POST http://127.0.0.1:5052/api/media/upload \
 ```bash
 curl -X POST http://127.0.0.1:5052/api/media/upload \
   -H "X-API-Key: YOUR_KEY" \
-  -F "file=@contract.docx"
+  -F "file=@contract.docx;type=application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ```
+
+> Важно: при загрузке DOCX нужно явно указывать MIME-тип через `;type=`, иначе многие HTTP-клиенты отправляют `application/octet-stream`.
 
 Ответ — ссылка на `.txt` с извлечённым текстом:
 ```json
@@ -126,7 +132,7 @@ curl -X POST http://127.0.0.1:5052/api/media/upload \
   "success": true,
   "data": {
     "type": "document",
-    "url": "http://127.0.0.1:5052/file/ff99ee88...",
+    "url": "https://media.automatoria.ru/file/ff99ee88...",
     "original": "contract.docx"
   }
 }
@@ -136,8 +142,10 @@ curl -X POST http://127.0.0.1:5052/api/media/upload \
 
 ### GET /file/\<file_id\> — получить файл (публичный, без ключа)
 
-```bash
-curl http://127.0.0.1:5052/file/a1b2c3d4e5f6...
+Доступен по публичному URL напрямую из браузера или чат-клиента:
+
+```
+https://media.automatoria.ru/file/a1b2c3d4e5f6...
 ```
 
 Возвращает файл с правильным `Content-Type`. Изображения кэшируются на год (`immutable`), документы — на сутки.
@@ -163,7 +171,7 @@ curl -X DELETE http://127.0.0.1:5052/api/media/file/a1b2c3d4e5f6... \
 
 ---
 
-### GET /health — проверка состояния
+### GET /health — проверка состояния (только localhost)
 
 ```bash
 curl http://127.0.0.1:5052/health
@@ -200,7 +208,7 @@ curl http://127.0.0.1:5052/health
 | `MEDIA_STORAGE_DIR` | `/opt/deploy/media` | Директория хранения файлов |
 | `MEDIA_MAX_UPLOAD_BYTES` | `20971520` (20 MB) | Максимальный размер файла |
 | `MEDIA_MAX_PDF_PAGES` | `50` | Максимум страниц в PDF |
-| `MEDIA_PUBLIC_URL` | `https://media.automatoria.ru` | Базовый URL в ответах |
+| `MEDIA_PUBLIC_URL` | `https://media.automatoria.ru` | Базовый URL в ответах upload |
 
 ## Хранилище на диске
 
@@ -209,10 +217,6 @@ curl http://127.0.0.1:5052/health
 ├── files/     — бинарные файлы (изображения, PNG страниц, TXT)
 └── meta/      — JSON-метаданные (mime, имя, размер, дата)
 ```
-
-## Обратная совместимость
-
-Старые ссылки вида `https://media.automatoria.ru/picture/<id>` автоматически редиректятся на `/file/<id>` через nginx (HTTP 301).
 
 ## Управление сервисом
 
