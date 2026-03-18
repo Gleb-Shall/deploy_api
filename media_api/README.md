@@ -2,9 +2,23 @@
 
 Отдельный микросервис для загрузки, хранения и выдачи файлов. Используется чат-ботом для работы с вложениями.
 
-- **Порт:** 5052
-- **Публичный URL:** `https://media.automatoria.ru`
+- **Порт:** 5052 (только `127.0.0.1` — не открыт в интернет)
+- **Доступ:** только с сервера напрямую или через SSH-туннель
 - **Auth:** заголовок `X-API-Key` (тот же ключ что у domain_api)
+
+## Доступ через SSH-туннель
+
+Если чат-бот работает на другой машине:
+
+```bash
+# Пробросить порт 5052 с сервера на локальную машину
+ssh -N -L 5052:127.0.0.1:5052 root@45.90.35.151
+
+# Теперь обращаться как к локальному сервису
+curl -X POST http://127.0.0.1:5052/api/media/upload ...
+```
+
+Если чат-бот на том же сервере — просто используй `http://127.0.0.1:5052` напрямую.
 
 ## Поддерживаемые типы файлов
 
@@ -44,8 +58,7 @@ MEDIA_PUBLIC_URL=https://media.automatoria.ru
 
 ## API для чат-бота
 
-Все примеры используют публичный URL `https://media.automatoria.ru`.
-Для прямого обращения с сервера замените на `http://127.0.0.1:5052`.
+Все примеры используют `http://127.0.0.1:5052` — напрямую с сервера или через SSH-туннель.
 
 ---
 
@@ -56,7 +69,7 @@ MEDIA_PUBLIC_URL=https://media.automatoria.ru
 **Загрузка изображения:**
 
 ```bash
-curl -X POST https://media.automatoria.ru/api/media/upload \
+curl -X POST http://127.0.0.1:5052/api/media/upload \
   -H "X-API-Key: YOUR_KEY" \
   -F "file=@photo.jpg"
 ```
@@ -67,7 +80,7 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
   "success": true,
   "data": {
     "type": "image",
-    "url": "https://media.automatoria.ru/file/a1b2c3d4e5f6..."
+    "url": "http://127.0.0.1:5052/file/a1b2c3d4e5f6..."
   }
 }
 ```
@@ -77,7 +90,7 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
 **Загрузка PDF:**
 
 ```bash
-curl -X POST https://media.automatoria.ru/api/media/upload \
+curl -X POST http://127.0.0.1:5052/api/media/upload \
   -H "X-API-Key: YOUR_KEY" \
   -F "file=@document.pdf"
 ```
@@ -89,9 +102,9 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
   "data": {
     "type": "pdf_pages",
     "pages": [
-      {"page": 1, "url": "https://media.automatoria.ru/file/aa11bb22..."},
-      {"page": 2, "url": "https://media.automatoria.ru/file/cc33dd44..."},
-      {"page": 3, "url": "https://media.automatoria.ru/file/ee55ff66..."}
+      {"page": 1, "url": "http://127.0.0.1:5052/file/aa11bb22..."},
+      {"page": 2, "url": "http://127.0.0.1:5052/file/cc33dd44..."},
+      {"page": 3, "url": "http://127.0.0.1:5052/file/ee55ff66..."}
     ]
   }
 }
@@ -102,7 +115,7 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
 **Загрузка DOCX:**
 
 ```bash
-curl -X POST https://media.automatoria.ru/api/media/upload \
+curl -X POST http://127.0.0.1:5052/api/media/upload \
   -H "X-API-Key: YOUR_KEY" \
   -F "file=@contract.docx"
 ```
@@ -113,7 +126,7 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
   "success": true,
   "data": {
     "type": "document",
-    "url": "https://media.automatoria.ru/file/ff99ee88...",
+    "url": "http://127.0.0.1:5052/file/ff99ee88...",
     "original": "contract.docx"
   }
 }
@@ -124,7 +137,7 @@ curl -X POST https://media.automatoria.ru/api/media/upload \
 ### GET /file/\<file_id\> — получить файл (публичный, без ключа)
 
 ```bash
-curl https://media.automatoria.ru/file/a1b2c3d4e5f6...
+curl http://127.0.0.1:5052/file/a1b2c3d4e5f6...
 ```
 
 Возвращает файл с правильным `Content-Type`. Изображения кэшируются на год (`immutable`), документы — на сутки.
@@ -134,7 +147,7 @@ curl https://media.automatoria.ru/file/a1b2c3d4e5f6...
 ### DELETE /api/media/file/\<file_id\> — удалить файл
 
 ```bash
-curl -X DELETE https://media.automatoria.ru/api/media/file/a1b2c3d4e5f6... \
+curl -X DELETE http://127.0.0.1:5052/api/media/file/a1b2c3d4e5f6... \
   -H "X-API-Key: YOUR_KEY"
 ```
 
@@ -153,7 +166,7 @@ curl -X DELETE https://media.automatoria.ru/api/media/file/a1b2c3d4e5f6... \
 ### GET /health — проверка состояния
 
 ```bash
-curl https://media.automatoria.ru/health
+curl http://127.0.0.1:5052/health
 ```
 
 ```json
