@@ -1,6 +1,7 @@
 """
 Media API — загрузка файлов от чат-бота.
-Порт 5052. Поддерживает: изображения, PDF (→ PNG по страницам), DOCX (→ TXT).
+Порт 5052. Поддерживает: изображения, PDF (→ PNG по страницам), DOCX/PPTX/XLSX/XLS (→ TXT),
+TXT, DOC, видео (mp4/mov/avi) — сохраняются как есть.
 """
 import hmac
 import traceback
@@ -19,10 +20,14 @@ from config import (
     MEDIA_PUBLIC_URL,
     MEDIA_STORAGE_DIR,
 )
-from processors import ProcessingError, docx_to_text, pdf_to_pages
+from processors import ProcessingError, docx_to_text, pdf_to_pages, pptx_to_text, xlsx_to_text, xls_to_text
 from storage import delete_file, get_file_info, save_file
 
 MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+MIME_PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MIME_XLS  = "application/vnd.ms-excel"
+MIME_DOC  = "application/msword"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MEDIA_MAX_UPLOAD_BYTES
@@ -57,6 +62,25 @@ def _err(code: str, message: str, status: int):
     return jsonify({"success": False, "error": {"code": code, "message": message}}), status
 
 
+def _save_as_document(content: bytes, mime: str, original_name: str):
+    """Сохраняет файл как есть и возвращает ответ типа document."""
+    file_id, _ = save_file(MEDIA_STORAGE_DIR, content, mime, original_name, "document")
+    return jsonify({
+        "success": True,
+        "data": {"type": "document", "url": _file_url(file_id), "original": original_name},
+    })
+
+
+def _convert_to_text_document(text_bytes: bytes, original_name: str):
+    """Сохраняет извлечённый текст и возвращает ответ типа document."""
+    txt_name = original_name.rsplit(".", 1)[0] + ".txt"
+    file_id, _ = save_file(MEDIA_STORAGE_DIR, text_bytes, "text/plain", txt_name, "document")
+    return jsonify({
+        "success": True,
+        "data": {"type": "document", "url": _file_url(file_id), "original": original_name},
+    })
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.route("/api/media/upload", methods=["POST"])
@@ -67,9 +91,15 @@ def upload():
     Загрузка файла (multipart/form-data, поле file).
 
     Поддерживаемые типы:
-      image/*   → сохраняется как есть
-      PDF       → каждая страница конвертируется в PNG
-      DOCX      → извлекается текст, сохраняется как .txt
+      image/*         → сохраняется как есть
+      PDF             → каждая страница конвертируется в PNG
+      DOCX            → извлекается текст, сохраняется как .txt
+      PPTX            → извлекается текст слайдов, сохраняется как .txt
+      XLSX            → извлекается текст ячеек, сохраняется как .txt
+      XLS             → извлекается текст ячеек, сохраняется как .txt
+      TXT             → сохраняется как есть
+      DOC             → сохраняется как есть
+      video/*         → сохраняется как есть
     """
     if "file" not in request.files:
         return _err("MISSING_FILE", "Поле file обязательно", 400)
@@ -109,15 +139,37 @@ def upload():
 
         # ── DOCX → TXT ──
         if mime == MIME_DOCX:
-            text_bytes, text_mime = docx_to_text(content)
-            txt_name = original_name.rsplit(".", 1)[0] + ".txt"
-            file_id, _ = save_file(MEDIA_STORAGE_DIR, text_bytes, text_mime, txt_name, "document")
-            return jsonify({
-                "success": True,
-                "data": {"type": "document", "url": _file_url(file_id), "original": original_name},
-            })
+            text_bytes, _ = docx_to_text(content)
+            return _convert_to_text_document(text_bytes, original_name)
 
-        return _err("UNSUPPORTED_TYPE", f"Тип {mime!r} не поддерживается. Допустимы: image/*, PDF, DOCX", 400)
+        # ── PPTX → TXT ──
+        if mime == MIME_PPTX:
+            text_bytes, _ = pptx_to_text(content)
+            return _convert_to_text_document(text_bytes, original_name)
+
+        # ── XLSX → TXT ──
+        if mime == MIME_XLSX:
+            text_bytes, _ = xlsx_to_text(content)
+            return _convert_to_text_document(text_bytes, original_name)
+
+        # ── XLS → TXT ──
+        if mime == MIME_XLS:
+            text_bytes, _ = xls_to_text(content)
+            return _convert_to_text_document(text_bytes, original_name)
+
+        # ── TXT — сохранить как есть ──
+        if mime == "text/plain":
+            return _save_as_document(content, mime, original_name)
+
+        # ── DOC — сохранить как есть (старый бинарный формат) ──
+        if mime == MIME_DOC:
+            return _save_as_document(content, mime, original_name)
+
+        # ── Видео — сохранить как есть ──
+        if mime.startswith("video/"):
+            return _save_as_document(content, mime, original_name)
+
+        return _err("UNSUPPORTED_TYPE", f"Тип {mime!r} не поддерживается. Допустимы: image/*, PDF, DOCX, PPTX, XLSX, XLS, TXT, DOC, video/*", 400)
 
     except ProcessingError as e:
         return _err("PROCESSING_ERROR", str(e), 422)
