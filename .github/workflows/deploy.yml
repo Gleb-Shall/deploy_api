@@ -70,3 +70,36 @@ PROXYEOF
             curl -sf http://127.0.0.1:5000/health || (echo "domain_api health check failed" && exit 1)
 
             echo "==> All services healthy!"
+
+  deploy-media:
+    name: Deploy Media Server
+    runs-on: ubuntu-latest
+    needs: deploy
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.MEDIA_SERVER_IP }}
+          username: root
+          key: ${{ secrets.MEDIA_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/deploy_api
+
+            echo "==> Pulling latest code..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Updating nginx config..."
+            cp server/nginx/media_api.conf /etc/nginx/sites-available/media_api
+            nginx -t
+            systemctl reload nginx
+
+            echo "==> Health checks..."
+            sleep 2
+            curl -sf http://127.0.0.1:5051/health || (echo "screenshot_api health check failed" && exit 1)
+            curl -sf http://127.0.0.1:5052/health || (echo "media_api health check failed" && exit 1)
+
+            echo "==> Media server healthy!"

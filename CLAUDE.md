@@ -11,6 +11,18 @@ git push → post-receive hook → Redis queue → deploy worker → Docker buil
 
 Сайты доступны по `https://automatoria.ru/{hash}/` или кастомному домену.
 
+## Серверная инфраструктура
+
+| Сервер | IP | Что крутится |
+|--------|-----|-------------|
+| **deploy** | `45.90.35.151` | domain_api (5000), screenshot_api (5051), media_api (5052), nginx, Redis, Docker воркеры |
+| **media** | `178.72.171.111` | screenshot_api (5051), media_api (5052), nginx (media.automatoria.ru) |
+
+**Деплой deploy сервера:** CI/CD при push в main (`.github/workflows/deploy.yml`)
+**Деплой media сервера:** CI/CD при push в main (job `deploy-media`, зависит от `deploy`) или вручную: `./tools/deploy_media_server.sh`
+
+> Для CI/CD нужны GitHub secrets: `DEPLOY_SERVER_IP`, `DEPLOY_SSH_KEY`, `MEDIA_SERVER_IP`, `MEDIA_SSH_KEY`
+
 ## Структура проекта
 
 ```
