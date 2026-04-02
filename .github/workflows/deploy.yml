@@ -26,6 +26,17 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            echo "==> Ensuring docker buildx is installed..."
+            if ! docker buildx version >/dev/null 2>&1; then
+              ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+              BUILDX_VERSION=$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | grep tag_name | cut -d'"' -f4)
+              mkdir -p /usr/lib/docker/cli-plugins
+              curl -sL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${ARCH}" \
+                -o /usr/lib/docker/cli-plugins/docker-buildx
+              chmod +x /usr/lib/docker/cli-plugins/docker-buildx
+              echo "buildx installed: $(docker buildx version)"
+            fi
+
             echo "==> Restarting API services..."
             systemctl restart domain_api screenshot_api media_api
 
