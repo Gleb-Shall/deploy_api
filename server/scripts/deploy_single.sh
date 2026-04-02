@@ -65,7 +65,7 @@ trap 'notify_deploy_done "failed"' ERR
 # docker build может писать ошибки в stdout или stderr в зависимости от версии/драйвера, поэтому захватываем оба
 log "Сборка образа..."
 tmpout="${WORK_TREE}/.build_out.$$"
-docker build -t "$IMAGE_NAME" "$WORK_TREE" 2>&1 | tee "$tmpout"
+DOCKER_BUILDKIT=1 docker build -t "$IMAGE_NAME" "$WORK_TREE" 2>&1 | tee "$tmpout"
 build_rc=${PIPESTATUS[0]}
 if [[ $build_rc -ne 0 ]]; then
   log "Ошибка сборки Docker"
