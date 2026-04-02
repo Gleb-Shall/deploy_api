@@ -26,6 +26,29 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            echo "==> Ensuring tinyproxy is installed and running on port 8888..."
+            if ! systemctl is-active --quiet tinyproxy; then
+              apt-get install -y tinyproxy
+              printf '[Unit]\nDescription=TinyProxy HTTP proxy\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/bin/tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/tinyproxy.service
+              systemctl daemon-reload
+            fi
+            cat > /etc/tinyproxy/tinyproxy.conf << 'PROXYEOF'
+User tinyproxy
+Group tinyproxy
+Port 8888
+Listen 127.0.0.1
+Timeout 600
+DefaultErrorFile "/usr/share/tinyproxy/default.html"
+LogFile "/var/log/tinyproxy/tinyproxy.log"
+LogLevel Info
+MaxClients 100
+Allow 127.0.0.1
+PROXYEOF
+            systemctl enable tinyproxy
+            systemctl restart tinyproxy
+            sleep 2
+            curl -sf --proxy http://127.0.0.1:8888 --max-time 5 http://example.com -o /dev/null || echo "tinyproxy warning: proxy test failed"
+
             echo "==> Ensuring docker buildx is installed..."
             if ! docker buildx version >/dev/null 2>&1; then
               ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
