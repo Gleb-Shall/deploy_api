@@ -75,9 +75,9 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.MEDIA_SERVER_IP }}
+          host: ${{ secrets.DEPLOY_SERVER_IP }}
           username: root
-          key: ${{ secrets.MEDIA_SSH_KEY }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -e
 
