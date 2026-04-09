@@ -157,15 +157,12 @@ cat ~/.ssh/id_rsa.pub | ssh $DEPLOY_SERVER \
 ### Шаг 2: Разверните скрипты и конфиги
 
 ```bash
-./tools/deploy_to_server.sh
+git push origin main
 ```
 
-Этот скрипт:
-- Копирует все скрипты из `server/scripts/` в `/opt/deploy_api/scripts/` на сервере
-- Копирует nginx конфиги из `server/nginx/`
-- Копирует systemd units из `server/systemd/`
-- Копирует fail2ban конфиги из `server/fail2ban/`
-- Перезапускает deploy workers
+CI/CD автоматически синхронизирует `server/scripts/` → `/opt/deploy_api/scripts/` на сервере и перезапускает API сервисы. Ручного запуска `deploy_to_server.sh` не требуется.
+
+> Для первичной настройки nginx, systemd и fail2ban конфигов по-прежнему можно использовать `./tools/deploy_to_server.sh` (выполняется один раз).
 
 ### Шаг 3: Создайте и задеплойте первый сайт
 
@@ -235,10 +232,10 @@ dig example.com
 **Обновление скриптов на сервере** (после изменений в вашем локальном репо):
 
 ```bash
-./tools/deploy_to_server.sh
+git push origin main
 ```
 
-Это скопирует все изменения скриптов, конфигов и systemd юнитов на сервер и перезапустит воркеры.
+CI/CD автоматически синхронизирует `server/scripts/` → `/opt/deploy_api/scripts/` и перезапустит API сервисы. Ручного запуска `deploy_to_server.sh` не требуется.
 
 ## Архитектура системы
 
@@ -321,12 +318,13 @@ Rate limiting (на каждую страницу отдельно):
 - `/domain_api/api.py` — endpoint `/api/css-bundle` (localhost only)
 
 **Как работает:**
-1. При деплое Docker запускает `obfuscate_css.js`:
-   - Переименовывает все CSS классы: `.button` → `.a1b2c3d4`
+1. `deploy_single.sh` копирует `obfuscate_css.js` из `/opt/deploy_api/scripts/` в work tree перед Docker build
+2. Docker запускает `obfuscate_css.js` в builder stage:
+   - Переименовывает все CSS классы: `.button` → `._a1b2c3`
    - Удаляет все `<style>` теги из HTML
    - Сохраняет CSS bundle в файл `/css_bundle.txt`
-2. `deploy_single.sh` извлекает `css_bundle.txt` из контейнера → хранит в Redis
-3. Браузер загружает чистый HTML **без стилей** → выглядит сломанным
+3. `deploy_single.sh` извлекает `css_bundle.txt` из контейнера → хранит в Redis
+4. Браузер загружает чистый HTML **без стилей** → выглядит сломанным без fingerprint JS
 
 **Результат:** HTML украсть бесполезно — без CSS выглядит как мусор.
 
@@ -335,18 +333,13 @@ Rate limiting (на каждую страницу отдельно):
 **Файл:** `/domain_api/canary.py` — логирование попыток доступа
 
 **Как работает:**
-1. При деплое в HTML инжектируется **5 скрытых ссылок** вида `<a href="/r/<token>" style="display:none"></a>`
-2. Каждая ссылка уникальна и хранит в Redis метаданные (page_hash, IP, UA при генерации)
-3. Если кто-то загруженный HTML, браузер может случайно кликнуть → логируется в Redis:
+1. При деплое `deploy_single.sh` генерирует **5 canary-токенов** и сохраняет их в Redis:
+   - `canary:page:PAGE_HASH` — JSON массив токенов для страницы
+   - `canary:token:TOKEN` — метаданные каждого токена
+2. Токены **не встроены в HTML** — `preview-js` скрипт подгружает их из Redis через API и инжектирует скрытые ссылки через JS (невидимо для curl-парсеров)
+3. Каждая ссылка уникальна: `GET /r/<token>` логирует referer/IP/UA в Redis:
    ```json
-   {
-     "token": "abc123...",
-     "page_hash": "xyz789",
-     "referer": "attacker.com",
-     "ip": "attacker-ip",
-     "ua": "attacker-user-agent",
-     "ts": 1699564800
-   }
+   {"token": "abc123...", "page_hash": "xyz789", "referer": "attacker.com", "ip": "...", "ts": 1699564800}
    ```
 4. Ссылка редиректит на Wikipedia → не очевидно для пользователя
 
@@ -469,9 +462,17 @@ python api.py
 # Затем создайте .env на сервере
 ssh root@YOUR_SERVER_IP
 sudo nano /opt/deploy_api/domain_api/.env
-# Заполните BEGET_LOGIN и BEGET_PASSWORD
+# Заполните BEGET_LOGIN, BEGET_PASSWORD и CHALLENGE_SECRET
 sudo chmod 600 /opt/deploy_api/domain_api/.env
 ```
+
+Обязательные переменные в `.env`:
+
+| Переменная | Описание |
+|------------|----------|
+| `BEGET_LOGIN` | Логин Beget API |
+| `BEGET_PASSWORD` | Пароль Beget API |
+| `CHALLENGE_SECRET` | Секрет для `/api/challenge-token`. Без него endpoint возвращает 503. Генерация: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 
 **Автозапуск (systemd):**
 
@@ -532,6 +533,14 @@ curl -X POST http://127.0.0.1:5000/api/domain/check \
 **GET /r/<token>** — Canary redirect (публичный)
 - Логирует referrer → выявляет украденный HTML
 - Редиректит на Wikipedia (CANARY_REDIRECT_URL)
+
+**GET /api/challenge** — Получить challenge для proof-of-work (публичный)
+- Response: `{challenge: "...", difficulty: N}`
+
+**POST /api/challenge-token** — Проверить решение challenge, получить access token (публичный)
+- Request: `{challenge: "...", solution: "..."}`
+- Response: `{token: "...", ttl: N}`
+- Требует `CHALLENGE_SECRET` в `.env` — без него возвращает 503
 
 **POST /api/internal/screenshot-token** — Одноразовый bypass для скриншотов (localhost only)
 - Response: `{token: "...", ttl: 120}`

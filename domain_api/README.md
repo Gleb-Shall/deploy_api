@@ -62,6 +62,7 @@ sudo chmod 600 /opt/deploy_api/domain_api/.env
 
 - **BEGET_LOGIN**, **BEGET_PASSWORD** — обязательно
 - **API_KEY** — рекомендуется (защита endpoints)
+- **CHALLENGE_SECRET** — обязательно для `/api/challenge-token`; без него endpoint вернёт 503. Генерация: `python3 -c "import secrets; print(secrets.token_hex(32))"`
 - **MAX_DOMAIN_PRICE** — макс. цена покупки в рублях (по умолчанию 200)
 - **API_DEBUG=True** — блокирует покупку доменов
 

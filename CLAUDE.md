@@ -3,7 +3,7 @@
 ## Что это
 
 Платформа автоматического деплоя статических Astro-сайтов через `git push`.
-Сервер: `root@45.90.35.151` (пароль в `.env` на сервере, спроси у пользователя если нужен)
+Сервер: `root@178.72.171.111` (SSH: `~/.ssh/id_ed25519`)
 
 ```
 git push → post-receive hook → Redis queue → deploy worker → Docker build → nginx
@@ -15,8 +15,8 @@ git push → post-receive hook → Redis queue → deploy worker → Docker buil
 
 | Сервер | IP | Что крутится |
 |--------|-----|-------------|
-| **deploy** | `45.90.35.151` | domain_api (5000), screenshot_api (5051), media_api (5052), nginx, Redis, Docker воркеры |
-| **media** | `178.72.171.111` | screenshot_api (5051), media_api (5052), nginx (media.automatoria.ru) |
+| **deploy** | `178.72.171.111` | domain_api (5000), screenshot_api (5051), media_api (5052), nginx, Redis, Docker воркеры |
+| **media** | `178.72.171.111` | screenshot_api (5051), media_api (5052), nginx (media.automatoria.ru) — **тот же сервер** |
 
 **Деплой deploy сервера:** CI/CD при push в main (`.github/workflows/deploy.yml`)
 **Деплой media сервера:** CI/CD при push в main (job `deploy-media`, зависит от `deploy`) или вручную: `./tools/deploy_media_server.sh`
@@ -60,8 +60,9 @@ deploy_api/
 - `nginx-ratelimit`: 10× ответ 429 за минуту → бан на 1ч
 
 **Уровень 3 — CSS обфускация + fingerprint-based AES delivery** (`domain_api/api.py`):
-- При деплое: `obfuscate_css.js` переименовывает CSS-классы, удаляет `<style>` из HTML, кладёт CSS bundle в Redis
-- nginx `sub_filter` инжектирует `<script src=/api/preview-js?h=HASH>` и 5 canary-ссылок в каждую страницу
+- При деплое: `deploy_single.sh` копирует `obfuscate_css.js` в work tree → Docker запускает его → CSS-классы переименованы, `<style>` удалены, bundle в Redis
+- nginx `sub_filter` инжектирует `<script src=/api/preview-js?h=HASH>` в каждую страницу
+- 5 canary-токенов генерируются в Redis при деплое, JS инжектирует их в DOM
 - `GET /api/preview-js` — fingerprint collector + CSS decryptor JS (публичный)
 - `POST /api/fingerprint-key` — проверяет fingerprint (20+ сигналов), блокирует headless (`navigator.webdriver=true` → score≥5 → 403), шифрует CSS AES-128-GCM, возвращает ключ
 - `GET /r/<token>` — canary redirect: логирует referer/IP/UA в Redis, редиректит на Wikipedia
@@ -87,6 +88,10 @@ deploy_api/
 
 **Что НЕ защищает:** Playwright + stealth-плагин (подделывает все fingerprint сигналы). Против него — только Cloudflare Bot Management.
 
+**Обязательные env vars для domain_api** (`/opt/deploy_api/domain_api/.env`):
+- `CHALLENGE_SECRET` — JWT-секрет для PoW challenge токенов. Без него `/api/challenge-token` возвращает 503. Генерировать: `python3 -c "import secrets; print(secrets.token_hex(32))"`
+- `REDIS_URL` — подключение к Redis (по умолчанию `redis://localhost:6379`)
+
 ## Ключевые файлы на сервере
 
 | Файл | Путь |
@@ -99,13 +104,23 @@ deploy_api/
 
 ## Workflow синхронизации с сервером
 
+**Скрипты синхронизируются автоматически через CI/CD** при push в `main`:
+- CI/CD делает `cp -r server/scripts/* /opt/deploy_api/scripts/` на deploy сервере
+- Ручного запуска `deploy_to_server.sh` больше не требуется
+
 ```bash
 # Подтянуть изменённый файл с сервера в git
-scp root@45.90.35.151:/path/to/file ./local/path
+scp root@178.72.171.111:/path/to/file ./local/path
 cd ~/Documents/GitHub/deploy_api && git add . && git commit -m "..."
 
-# Отправить скрипты на сервер
-./tools/deploy_to_server.sh
+# Задеплоить изменения (скрипты + API сервисы):
+git push origin main
+# CI/CD сам синхронизирует server/scripts/ → /opt/deploy_api/scripts/ и перезапустит сервисы
+```
+
+**Ручной редеплой сайта** (если нужно пересобрать без git push):
+```bash
+ssh root@178.72.171.111 "redis-cli RPUSH deploy_queue PAGE_HASH"
 ```
 
 ## MCP инструменты

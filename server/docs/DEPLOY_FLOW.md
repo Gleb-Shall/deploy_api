@@ -62,6 +62,7 @@ git push origin main
 |-----|----------|-------------|
 | 1 | PAGE_HASH из $1 | — |
 | 2 | WORK_TREE = /opt/deploy/$PAGE_HASH | Должен существовать (создан post-receive) |
+| 2a | `cp /opt/deploy_api/scripts/obfuscate_css.js $WORK_TREE/obfuscate_css.js` | Work tree содержит только Astro проект; Dockerfile ищет `/app/obfuscate_css.js` — файл нужно скопировать явно |
 | 3 | **Docker build** | default builder, общий кэш (pnpm, Astro, слои), планировщик ОС распределяет нагрузку |
 | 4 | docker stop/rm старый контейнер | — |
 | 5 | PORT: из registry или 9000 + cksum(PAGE_HASH) % 999 | jq, registry.json |
