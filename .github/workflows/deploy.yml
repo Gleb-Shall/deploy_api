@@ -26,6 +26,12 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            echo "==> Syncing server scripts..."
+            cp -r server/scripts/* /opt/deploy_api/scripts/
+            chmod +x /opt/deploy_api/scripts/*.sh 2>/dev/null || true
+            chmod +x /opt/deploy_api/scripts/*.py 2>/dev/null || true
+            chmod +x /opt/deploy_api/scripts/*.js 2>/dev/null || true
+
             echo "==> Ensuring tinyproxy is installed and running on port 8888..."
             if ! systemctl is-active --quiet tinyproxy; then
               apt-get install -y tinyproxy
