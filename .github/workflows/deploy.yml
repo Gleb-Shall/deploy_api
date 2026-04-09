@@ -38,18 +38,7 @@ jobs:
               printf '[Unit]\nDescription=TinyProxy HTTP proxy\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=/usr/bin/tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf\n\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/tinyproxy.service
               systemctl daemon-reload
             fi
-            cat > /etc/tinyproxy/tinyproxy.conf << 'PROXYEOF'
-User tinyproxy
-Group tinyproxy
-Port 8888
-Listen 127.0.0.1
-Timeout 600
-DefaultErrorFile "/usr/share/tinyproxy/default.html"
-LogFile "/var/log/tinyproxy/tinyproxy.log"
-LogLevel Info
-MaxClients 100
-Allow 127.0.0.1
-PROXYEOF
+            printf 'User tinyproxy\nGroup tinyproxy\nPort 8888\nListen 127.0.0.1\nTimeout 600\nDefaultErrorFile "/usr/share/tinyproxy/default.html"\nLogFile "/var/log/tinyproxy/tinyproxy.log"\nLogLevel Info\nMaxClients 100\nAllow 127.0.0.1\n' > /etc/tinyproxy/tinyproxy.conf
             systemctl enable tinyproxy
             systemctl restart tinyproxy
             sleep 2
