@@ -61,6 +61,15 @@ trap 'notify_deploy_done "failed"' ERR
 
 [[ -d "$WORK_TREE" ]] || { log "Work tree не найден"; exit 1; }
 
+# Copy obfuscate_css.js into work tree so Dockerfile can find it at /app/obfuscate_css.js
+SCRIPTS_DIR="$(dirname "$0")"
+if [[ -f "${SCRIPTS_DIR}/obfuscate_css.js" ]]; then
+  cp "${SCRIPTS_DIR}/obfuscate_css.js" "${WORK_TREE}/obfuscate_css.js"
+  log "obfuscate_css.js copied to work tree"
+else
+  log "Warning: obfuscate_css.js not found in ${SCRIPTS_DIR} — CSS obfuscation will be skipped"
+fi
+
 # Docker build: при ошибке весь вывод (stdout+stderr) пишем в Redis — post-receive отдаёт в ответ на push
 # docker build может писать ошибки в stdout или stderr в зависимости от версии/драйвера, поэтому захватываем оба
 log "Сборка образа..."
