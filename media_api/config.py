@@ -14,6 +14,7 @@ MEDIA_PORT = int(os.getenv("MEDIA_PORT", "5052"))
 
 MEDIA_STORAGE_DIR = os.getenv("MEDIA_STORAGE_DIR", "/opt/deploy/media")
 MEDIA_MAX_UPLOAD_BYTES = int(os.getenv("MEDIA_MAX_UPLOAD_BYTES", "20971520"))  # 20 MB
+MEDIA_MAX_VIDEO_BYTES = int(os.getenv("MEDIA_MAX_VIDEO_BYTES", "524288000"))  # 500 MB
 MEDIA_MAX_PDF_PAGES = int(os.getenv("MEDIA_MAX_PDF_PAGES", "50"))
 
 # Базовый URL для ссылок в ответах (без слэша в конце)
