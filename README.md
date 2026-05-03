@@ -15,7 +15,7 @@ deploy worker → Docker build → контейнер → nginx reverse proxy
 - Кастомные домены через файл `domain` в корне проекта
 - Поддержка pnpm, npm, yarn
 - Интеграция с Google Search Console и Яндекс Индекс
-- Микросервисы: Domain API (домены + защита от скрейпинга), Screenshot API (скриншоты), Media API (файлы от чат-бота: изображения, PDF→PNG, DOCX→TXT)
+- Микросервисы: Domain API (домены + защита от скрейпинга), Screenshot API (скриншоты), Media API (файлы от чат-бота: изображения, PDF→PNG, DOCX→TXT), Versioning API (rollback/forward версий сайтов)
 - **Многоуровневая защита от парсинга:** CSS обфускация, fingerprinting, canary ссылки, domain lock
 
 ## Структура проекта
@@ -47,13 +47,19 @@ deploy_api/
 │   ├── requirements.txt                 # Python зависимости
 │   └── README.md                        # Документация Media API (для чат-бота)
 │
+├── versioning_api/                      # (в репо survey-server-client) Flask API: rollback/forward версий, порт 5061
+│   ├── app.py                           # Flask приложение (rollback, forward, status)
+│   ├── rollback.sh                      # Откат сайта на один git-коммит назад
+│   ├── forward.sh                       # Перемотка вперёд (отмена rollback)
+│   └── rollback_common.sh               # Утилиты: trigger_redeploy, mutex, pointer
+│
 ├── server/                              # Серверная часть (scripts, configs, docs)
 │   ├── scripts/                         # Bash/Python скрипты деплоя
 │   │   ├── setup_fresh_server.sh        # ⭐ Первичная настройка сервера (один раз)
 │   │   ├── git_wrap.sh                  # SSH forced command: создание репо и пост-receive хук
 │   │   ├── post-receive.template        # Git hook: checkout + очередь + деплой
 │   │   ├── deploy_worker.sh             # Демон очереди Redis (max 2 деплоя одновременно)
-│   │   ├── deploy_single.sh             # Деплой одного сайта, извлечение CSS bundle
+│   │   ├── deploy_single.sh             # ⭐ Деплой одного сайта, извлечение CSS bundle
 │   │   ├── obfuscate_css.js             # Node.js скрипт: переименование CSS классов, удаление <style>
 │   │   ├── remove_site.sh               # Удаление сайта (-A для удаления всех)
 │   │   ├── install_deploy_workers.sh    # Установка systemd сервисов для воркеров
@@ -66,6 +72,11 @@ deploy_api/
 │   │   ├── check_deploy_status.sh       # Проверка статуса деплоев
 │   │   ├── diagnose_docker.sh           # Диагностика Docker проблем
 │   │   └── manage_ports_queue.sh        # Управление портами для контейнеров
+│   │
+│   │   # ⚠️  rollback.sh, forward.sh, rollback_common.sh — НЕ здесь.
+│   │   #     Они живут в репо survey-server-client/server/scripts/ и
+│   │   #     деплоятся его CI/CD. deploy_single.sh и deploy_worker.sh
+│   │   #     туда НЕ копируются — только rollback/forward скрипты.
 │   │
 │   ├── nginx/                           # Nginx конфигурация
 │   │   ├── deploy_main                  # Основной конфиг nginx (reverse proxy, SSL)
