@@ -15,7 +15,7 @@ git push → post-receive hook → Redis queue → deploy worker → Docker buil
 
 | Сервер | IP | Что крутится |
 |--------|-----|-------------|
-| **deploy** | `178.72.171.111` | domain_api (5000), screenshot_api (5051), media_api (5052), nginx, Redis, Docker воркеры |
+| **deploy** | `178.72.171.111` | domain_api (5000), screenshot_api (5051), media_api (5052), versioning_api (5061), nginx, Redis, Docker воркеры |
 | **media** | `178.72.171.111` | screenshot_api (5051), media_api (5052), nginx (media.automatoria.ru) — **тот же сервер** |
 
 **Деплой deploy сервера:** CI/CD при push в main (`.github/workflows/deploy.yml`)
@@ -92,6 +92,26 @@ deploy_api/
 - `CHALLENGE_SECRET` — JWT-секрет для PoW challenge токенов. Без него `/api/challenge-token` возвращает 503. Генерировать: `python3 -c "import secrets; print(secrets.token_hex(32))"`
 - `REDIS_URL` — подключение к Redis (по умолчанию `redis://localhost:6379`)
 
+## Версионирование сайтов (rollback/forward)
+
+Сервис для отката и перемотки версий сайта — **versioning_api** (порт 5061). Живёт и деплоится из репозитория `survey-server-client`:
+
+- `server/deploy_api/app.py` — Flask API, порт 5061, принимает rollback/forward/status запросы
+- `server/scripts/rollback.sh` — откатывает сайт на один git-коммит назад
+- `server/scripts/forward.sh` — перемотка вперёд (отмена rollback)
+- `server/scripts/rollback_common.sh` — общие утилиты для rollback/forward
+
+Оба скрипта вызывают `deploy_single.sh` локально через `trigger_redeploy` для пересборки Docker-образа с нужным SHA.
+
+> **Важно:** `survey-server-client`'s CI/CD копирует на сервер **только** `rollback.sh`, `forward.sh`, `rollback_common.sh` — не `deploy_single.sh` и не `deploy_worker.sh`. Те управляются исключительно через этот репозиторий (`deploy_api`).
+
+Цепочка вызовов:
+```
+chat-ui → POST /api/versioning/rollback (survey-server-client API)
+  → HTTP POST http://178.72.171.111:5061/api/deploy/rollback (versioning_api)
+    → rollback.sh → deploy_single.sh → Docker build → nginx
+```
+
 ## Ключевые файлы на сервере
 
 | Файл | Путь |
@@ -99,13 +119,21 @@ deploy_api/
 | nginx antibot | `/etc/nginx/conf.d/antibot.conf` |
 | nginx главный | `/etc/nginx/sites-available/deploy_main` |
 | deploy скрипт | `/opt/deploy_api/scripts/deploy_single.sh` |
+| rollback скрипт | `/opt/deploy_api/scripts/rollback.sh` |
+| forward скрипт | `/opt/deploy_api/scripts/forward.sh` |
+| versioning API | `/opt/deploy_api/app.py` (порт 5061) |
 | domain API | `/opt/deploy_api/domain_api/api.py` |
 | fail2ban jail | `/etc/fail2ban/jail.d/nginx-antibot.conf` |
 
 ## Workflow синхронизации с сервером
 
-**Скрипты синхронизируются автоматически через CI/CD** при push в `main`:
+**Скрипты `deploy_single.sh`, `deploy_worker.sh` синхронизируются через CI/CD этого репо** при push в `main`:
 - CI/CD делает `cp -r server/scripts/* /opt/deploy_api/scripts/` на deploy сервере
+
+**Скрипты `rollback.sh`, `forward.sh`, `rollback_common.sh` и `app.py` (5061) синхронизируются через CI/CD `survey-server-client`** при push в его `main`.
+
+> Не добавляй `deploy_single.sh` или `deploy_worker.sh` в `survey-server-client/server/scripts/` — это сломает деплой: их CI/CD перезатрёт правильные версии из этого репо.
+
 - Ручного запуска `deploy_to_server.sh` больше не требуется
 
 ```bash
