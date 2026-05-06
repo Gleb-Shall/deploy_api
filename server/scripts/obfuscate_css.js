@@ -145,9 +145,9 @@ for (const htmlFile of htmlFiles) {
   // Remove inline <style> tags (CSS moved to encrypted bundle), including empty ones
   html = html.replace(/<style[^>]*>[\s\S]*?<\/style>\s*/gi, '');
 
-  // Remove <link rel="stylesheet"> tags
-  html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]*\/?>/gi, '');
-  html = html.replace(/<link[^>]+href=[^>]+\.css[^>]*\/?>/gi, '');
+  // Remove only local <link rel="stylesheet"> tags (keep external CDNs like Google Fonts)
+  html = html.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["'](?!https?:\/\/)[^"']*["'][^>]*\/?>/gi, '');
+  html = html.replace(/<link[^>]+href=["'](?!https?:\/\/)[^"']*\.css["'][^>]*\/?>/gi, '');
 
   fs.writeFileSync(htmlFile, html, 'utf8');
 }
