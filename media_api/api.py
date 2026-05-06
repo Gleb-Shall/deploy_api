@@ -253,8 +253,8 @@ def upload():
             text_bytes, _ = xls_to_text(content)
             return _convert_to_text_document(text_bytes, original_name)
 
-        # ── TXT — сохранить как есть ──
-        if mime == "text/plain":
+        # ── TXT / MD — сохранить как есть ──
+        if mime in ("text/plain", "text/markdown", "text/x-markdown"):
             return _save_as_document(content, mime, original_name)
 
         # ── DOC — сохранить как есть (старый бинарный формат) ──
