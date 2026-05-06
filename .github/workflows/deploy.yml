@@ -55,6 +55,9 @@ jobs:
               echo "buildx installed: $(docker buildx version)"
             fi
 
+            echo "==> Installing media_api dependencies..."
+            /opt/deploy_api/media_api/venv/bin/pip install -r /opt/deploy_api/media_api/requirements.txt -q
+
             echo "==> Restarting API services..."
             systemctl restart domain_api screenshot_api media_api
 
