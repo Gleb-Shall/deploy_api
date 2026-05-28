@@ -23,6 +23,7 @@ from config import (
     FINGERPRINT_KEY_TTL,
     SCREENSHOT_TOKEN_TTL,
     ALLOWED_ORIGINS,
+    DOMAIN_CHECK_ALLOWED_IPS,
 )
 from canary import resolve_canary_token, log_canary_hit
 from fingerprint import score_headless, encrypt_css, HEADLESS_SCORE_THRESHOLD
@@ -79,6 +80,16 @@ def before_request():
     if request.path.startswith('/r/'):
         return None
     if request.path in ('/api/fingerprint-key', '/api/preview-js'):
+        return None
+    # Domain check — accessible from whitelisted IPs (still requires API key via decorator)
+    if request.path == '/api/domain/check':
+        remote_addr = request.environ.get('REMOTE_ADDR', '')
+        allowed = ['127.0.0.1', '::1', 'localhost'] + list(DOMAIN_CHECK_ALLOWED_IPS)
+        if remote_addr not in allowed:
+            return jsonify({
+                'success': False,
+                'error': {'code': 'FORBIDDEN', 'message': 'IP не в белом списке'}
+            }), 403
         return None
     # Все остальные — только с localhost
     error_response = check_local_only()

@@ -29,6 +29,12 @@ if API_HOST == '0.0.0.0':
     API_HOST = '127.0.0.1'
 
 API_KEY = (os.getenv('API_KEY') or '').strip()
+
+# IPs allowed to call /api/domain/check (comma-separated, in addition to localhost)
+_raw_allowed_ips = os.getenv('DOMAIN_CHECK_ALLOWED_IPS', '')
+DOMAIN_CHECK_ALLOWED_IPS: tuple[str, ...] = tuple(
+    v.strip() for v in _raw_allowed_ips.split(',') if v.strip()
+)
 # Порог цены для предупреждения в ответе check (price_exceeds_limit, warning)
 MAX_DOMAIN_PRICE = int(os.getenv('MAX_DOMAIN_PRICE', '200'))
 
