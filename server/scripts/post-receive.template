@@ -74,6 +74,8 @@ while read oldrev newrev refname; do
     NO_PROTECTION=false
     if [[ -f "$WORK_TREE/domain" ]]; then
       CUSTOM_DOMAIN_LINE=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+      # Ignore flags-only lines as domain (domain must contain a dot)
+      [[ "$CUSTOM_DOMAIN_LINE" != *"."* ]] && CUSTOM_DOMAIN_LINE=""
       [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
       if grep -qx "no_protection" "$WORK_TREE/domain" 2>/dev/null; then
         NO_PROTECTION=true
