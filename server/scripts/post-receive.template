@@ -6,6 +6,16 @@
 
 set -e
 
+# Self-update: если шаблон новее текущего хука — обновиться и перезапустить
+_TEMPLATE="/opt/deploy_api/scripts/post-receive.template"
+_SELF="${BASH_SOURCE[0]}"
+if [[ -f "$_TEMPLATE" ]] && ! diff -q "$_TEMPLATE" "$_SELF" >/dev/null 2>&1; then
+  cp "$_TEMPLATE" "$_SELF"
+  chmod +x "$_SELF"
+  exec "$_SELF" "$@"
+fi
+unset _TEMPLATE _SELF
+
 # GIT_DIR задаётся Git при вызове хука; canonicalize (убирает /. в конце)
 REPO_ROOT="$(cd "${GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}" && pwd)"
 PAGE_HASH="$(basename "$REPO_ROOT" .git)"
