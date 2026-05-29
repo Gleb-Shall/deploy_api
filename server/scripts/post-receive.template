@@ -71,13 +71,21 @@ while read oldrev newrev refname; do
     # Base path и кастомный домен — нужны до генерации Dockerfile (для проверки sitemap)
     SITE_BASE="/${PAGE_HASH}/"
     CUSTOM_DOMAIN_LINE=""
+    NO_PROTECTION=false
     if [[ -f "$WORK_TREE/domain" ]]; then
       CUSTOM_DOMAIN_LINE=$(head -n1 "$WORK_TREE/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
       [[ -n "$CUSTOM_DOMAIN_LINE" ]] && SITE_BASE="/"
+      if grep -qx "no_protection" "$WORK_TREE/domain" 2>/dev/null; then
+        NO_PROTECTION=true
+        log "Защита от парсинга отключена (флаг no_protection в файле domain)"
+      fi
     fi
 
     # Copy CSS obfuscation script into work tree (included in Docker build context via COPY . .)
-    cp /opt/deploy_api/scripts/obfuscate_css.js "$WORK_TREE/obfuscate_css.js" 2>/dev/null || true
+    # Skip if no_protection — Dockerfile falls back to: touch /app/css_bundle.txt
+    if [[ "$NO_PROTECTION" == false ]]; then
+      cp /opt/deploy_api/scripts/obfuscate_css.js "$WORK_TREE/obfuscate_css.js" 2>/dev/null || true
+    fi
 
     # Dockerfile с pnpm + BuildKit (без # syntax= — встроенный frontend, без resolve docker.io)
     log "Dockerfile: pnpm + BuildKit"

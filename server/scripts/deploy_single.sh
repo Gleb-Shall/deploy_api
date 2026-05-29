@@ -189,6 +189,33 @@ docker run -d \
 mkdir -p "$NGINX_DEPLOY_DIR"
 CONFIG_FILE="${NGINX_DEPLOY_DIR}/${SITE_PATH}.conf"
 
+NO_PROTECTION=false
+if [[ -f "${WORK_TREE}/domain" ]] && grep -qx "no_protection" "${WORK_TREE}/domain" 2>/dev/null; then
+  NO_PROTECTION=true
+  log "Nginx конфиг без защиты от парсинга (флаг no_protection)"
+fi
+
+if [[ "$NO_PROTECTION" == true ]]; then
+cat > "$CONFIG_FILE" << NGINXEOF
+# Location для /${SITE_PATH}/ (автосгенерировано deploy_single.sh, защита отключена)
+location /${SITE_PATH}/ {
+    proxy_pass http://127.0.0.1:${PORT}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    rewrite ^/${SITE_PATH}(/.*)\$ \$1 break;
+}
+
+location = /${SITE_PATH} {
+    return 301 /${SITE_PATH}/;
+}
+NGINXEOF
+else
 cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${SITE_PATH}/ (автосгенерировано deploy_single.sh)
 location /${SITE_PATH}/ {
@@ -216,6 +243,7 @@ location = /${SITE_PATH} {
     return 301 /${SITE_PATH}/;
 }
 NGINXEOF
+fi
 
 nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
 
