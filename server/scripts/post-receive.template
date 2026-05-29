@@ -94,7 +94,8 @@ while read oldrev newrev refname; do
     fi
 
     # Copy CSS obfuscation script into work tree (included in Docker build context via COPY . .)
-    # Skip if no_protection — Dockerfile falls back to: touch /app/css_bundle.txt
+    # Always remove first — git checkout -f leaves untracked files from previous deploys
+    rm -f "$WORK_TREE/obfuscate_css.js"
     if [[ "$NO_PROTECTION" == false ]]; then
       cp /opt/deploy_api/scripts/obfuscate_css.js "$WORK_TREE/obfuscate_css.js" 2>/dev/null || true
     fi
