@@ -23,7 +23,7 @@ from config import (
     MEDIA_PUBLIC_URL,
     MEDIA_STORAGE_DIR,
 )
-from processors import ProcessingError, docx_to_text, pdf_to_pages, pptx_to_text, xlsx_to_text, xls_to_text
+from processors import ProcessingError, docx_to_text, pdf_extract_text, pdf_to_pages, pptx_to_text, xlsx_to_text, xls_to_text
 from storage import delete_file, get_file_info, save_file
 
 MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -82,10 +82,11 @@ def _save_as_document(content: bytes, mime: str, original_name: str):
 def _convert_to_text_document(text_bytes: bytes, original_name: str):
     txt_name = original_name.rsplit(".", 1)[0] + ".txt"
     file_id, _ = save_file(MEDIA_STORAGE_DIR, text_bytes, "text/plain", txt_name, "document")
-    return jsonify({
-        "success": True,
-        "data": {"type": "document", "url": _file_url(file_id), "original": original_name},
-    })
+    text = text_bytes.decode("utf-8", errors="replace").strip()
+    resp_data = {"type": "document", "url": _file_url(file_id), "original": original_name}
+    if text:
+        resp_data["text"] = text[:32_000]
+    return jsonify({"success": True, "data": resp_data})
 
 
 def _stream_video(file_path: str, mime: str) -> Response:
@@ -223,15 +224,16 @@ def upload():
         # ── PDF → PNG по страницам ──
         if mime == "application/pdf":
             pages_data = pdf_to_pages(content, max_pages=MEDIA_MAX_PDF_PAGES)
+            extracted_text = pdf_extract_text(content)
             result_pages = []
             for i, (png_bytes, png_mime) in enumerate(pages_data, start=1):
                 page_name = f"{original_name}_page{i}.png"
                 file_id, _ = save_file(MEDIA_STORAGE_DIR, png_bytes, png_mime, page_name, "pdf_page")
                 result_pages.append({"page": i, "url": _file_url(file_id)})
-            return jsonify({
-                "success": True,
-                "data": {"type": "pdf_pages", "pages": result_pages},
-            })
+            resp_data = {"type": "pdf_pages", "pages": result_pages}
+            if extracted_text:
+                resp_data["text"] = extracted_text
+            return jsonify({"success": True, "data": resp_data})
 
         # ── DOCX → TXT ──
         if mime == MIME_DOCX:

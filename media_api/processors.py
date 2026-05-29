@@ -52,6 +52,35 @@ def pdf_to_pages(content: bytes, max_pages: int = 50) -> list[tuple[bytes, str]]
     return pages
 
 
+def pdf_extract_text(content: bytes, max_chars: int = 32_000) -> str:
+    """
+    Извлекает plain-text из PDF через pymupdf.
+    Возвращает пустую строку если fitz недоступен или текста нет (сканированный PDF).
+    Обрезает до max_chars чтобы не раздувать описание.
+    """
+    try:
+        import fitz
+    except ImportError:
+        return ""
+
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+    except Exception:
+        return ""
+
+    parts = []
+    try:
+        for page in doc:
+            t = page.get_text("text").strip()
+            if t:
+                parts.append(t)
+    finally:
+        doc.close()
+
+    text = "\n\n".join(parts).strip()
+    return text[:max_chars] if len(text) > max_chars else text
+
+
 def docx_to_text(content: bytes) -> tuple[bytes, str]:
     """
     Извлекает текст из DOCX и возвращает (text_bytes, "text/plain").
