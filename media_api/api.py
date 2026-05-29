@@ -85,7 +85,7 @@ def _convert_to_text_document(text_bytes: bytes, original_name: str):
     text = text_bytes.decode("utf-8", errors="replace").strip()
     resp_data = {"type": "document", "url": _file_url(file_id), "original": original_name}
     if text:
-        resp_data["text"] = text[:32_000]
+        resp_data["text"] = text[:200_000]
     return jsonify({"success": True, "data": resp_data})
 
 

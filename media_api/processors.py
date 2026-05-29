@@ -52,7 +52,7 @@ def pdf_to_pages(content: bytes, max_pages: int = 50) -> list[tuple[bytes, str]]
     return pages
 
 
-def pdf_extract_text(content: bytes, max_chars: int = 32_000) -> str:
+def pdf_extract_text(content: bytes, max_chars: int = 200_000) -> str:
     """
     Извлекает plain-text из PDF через pymupdf.
     Возвращает пустую строку если fitz недоступен или текста нет (сканированный PDF).
