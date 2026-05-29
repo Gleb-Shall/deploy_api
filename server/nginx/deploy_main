@@ -73,12 +73,8 @@ server {
         add_header Content-Type text/plain;
     }
 
-    # Главная страница automatoria.ru — проксируем с sub_filter для CSS (preview-js)
+    # Главная страница automatoria.ru
     location / {
-        proxy_set_header Accept-Encoding "";
-        sub_filter_types text/html;
-        sub_filter_once on;
-        sub_filter '</head>' '<script src=https://automatoria.ru/api/preview-js?h=automatoria-2ddf5ecf></script></head>';
         proxy_pass http://127.0.0.1:9060/automatoria-2ddf5ecf/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

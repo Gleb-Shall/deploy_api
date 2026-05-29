@@ -58,6 +58,11 @@ jobs:
             echo "==> Installing media_api dependencies..."
             /opt/deploy_api/media_api/venv/bin/pip install -r /opt/deploy_api/media_api/requirements.txt -q
 
+            echo "==> Updating nginx deploy_main config..."
+            cp server/nginx/deploy_main /etc/nginx/sites-available/deploy_main
+            nginx -t
+            systemctl reload nginx
+
             echo "==> Restarting API services..."
             systemctl restart domain_api screenshot_api media_api
 
