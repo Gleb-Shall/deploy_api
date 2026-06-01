@@ -160,11 +160,14 @@ DOCKERIGNORE
 	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
         awk -v b="${SITE_BASE}" '/site:/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       else
+        # Если defineConfig({}) в одну строку — раскрываем на multiline, потом вставляем base
+        sed -i.bak "s|defineConfig({})|defineConfig({\n})|g" "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
+          sed "s|defineConfig({})|defineConfig({\n})|g" "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
         sed -i.bak "/defineConfig({/a\\
 	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
         sed -i '' "/defineConfig({/a\\
 	base: '${SITE_BASE}'," "$WORK_TREE/astro.config.mjs" 2>/dev/null || \
-        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
+        awk -v b="${SITE_BASE}" '/defineConfig\(\{/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$WORK_TREE/astro.config.mjs.orig" > "$WORK_TREE/astro.config.mjs"
       fi
       rm -f "$WORK_TREE/astro.config.mjs.orig" "$WORK_TREE/astro.config.mjs.bak" 2>/dev/null || true
       # SEO: при кастомном домене добавляем site и sitemap в существующий конфиг (если ещё нет)
@@ -205,11 +208,13 @@ import sitemap from '@astrojs/sitemap';
         sed -i '' "s|base:.*|base: '${SITE_BASE}',|g" "$ASTRO_CFG" 2>/dev/null || \
         sed "s|base:.*|base: '${SITE_BASE}',|g" "$ASTRO_CFG.orig" > "$ASTRO_CFG"
       else
+        sed -i.bak "s|defineConfig({})|defineConfig({\n})|g" "$ASTRO_CFG" 2>/dev/null || \
+          sed "s|defineConfig({})|defineConfig({\n})|g" "$ASTRO_CFG.orig" > "$ASTRO_CFG"
         sed -i.bak "/defineConfig({/a\\
 	base: '${SITE_BASE}'," "$ASTRO_CFG" 2>/dev/null || \
         sed -i '' "/defineConfig({/a\\
 	base: '${SITE_BASE}'," "$ASTRO_CFG" 2>/dev/null || \
-        awk -v b="${SITE_BASE}" '/defineConfig({/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$ASTRO_CFG.orig" > "$ASTRO_CFG"
+        awk -v b="${SITE_BASE}" '/defineConfig\(\{/ {print; print "\tbase: \047" b "\047,"; next} {print}' "$ASTRO_CFG.orig" > "$ASTRO_CFG"
       fi
       rm -f "$ASTRO_CFG.orig" "$ASTRO_CFG.bak" 2>/dev/null || true
       if [[ -n "$CUSTOM_DOMAIN_LINE" ]]; then
