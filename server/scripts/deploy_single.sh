@@ -132,8 +132,10 @@ return_port_to_queue() {
 }
 
 OLD_PORT=""
+OLD_CUSTOM_DOMAIN=""
 if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
   OLD_PORT=$(jq -r --arg h "$SITE_PATH" '.[$h].container_port // empty' "$REGISTRY_FILE" 2>/dev/null)
+  OLD_CUSTOM_DOMAIN=$(jq -r --arg h "$SITE_PATH" '.[$h].custom_domain // empty' "$REGISTRY_FILE" 2>/dev/null)
 fi
 
 docker stop "$CONTAINER_NAME" 2>/dev/null || true
@@ -186,16 +188,192 @@ docker run -d \
 
 # ── Nginx конфиг ──────────────────────────────────────────────────────────────
 
-mkdir -p "$NGINX_DEPLOY_DIR"
+NGINX_CUSTOM_DIR="${NGINX_DEPLOY_DIR}/custom"
+mkdir -p "$NGINX_DEPLOY_DIR" "$NGINX_CUSTOM_DIR"
 CONFIG_FILE="${NGINX_DEPLOY_DIR}/${SITE_PATH}.conf"
 
+# Читаем кастомный домен и флаг no_protection из domain файла
+CUSTOM_DOMAIN=""
 NO_PROTECTION=false
-if [[ -f "${WORK_TREE}/domain" ]] && grep -qx "no_protection" "${WORK_TREE}/domain" 2>/dev/null; then
-  NO_PROTECTION=true
-  log "Nginx конфиг без защиты от парсинга (флаг no_protection)"
+if [[ -f "${WORK_TREE}/domain" ]]; then
+  CUSTOM_DOMAIN=$(head -n1 "${WORK_TREE}/domain" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  [[ "$CUSTOM_DOMAIN" != *"."* ]] && CUSTOM_DOMAIN=""
+  if grep -qx "no_protection" "${WORK_TREE}/domain" 2>/dev/null; then
+    NO_PROTECTION=true
+    log "Nginx конфиг без защиты от парсинга (флаг no_protection)"
+  fi
 fi
 
-if [[ "$NO_PROTECTION" == true ]]; then
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+  # ── Кастомный домен: отдельный server-блок + certbot ──────────────────────
+  rm -f "$CONFIG_FILE"
+  if [[ -n "$OLD_CUSTOM_DOMAIN" && "$OLD_CUSTOM_DOMAIN" != "$CUSTOM_DOMAIN" ]]; then
+    rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
+  fi
+  CUSTOM_CONF="${NGINX_CUSTOM_DIR}/${CUSTOM_DOMAIN}.conf"
+
+  # IndexNow ключ
+  INDEXNOW_DIR="/opt/deploy/indexnow-keys"
+  INDEXNOW_KEY_FILE="${INDEXNOW_DIR}/${CUSTOM_DOMAIN}"
+  mkdir -p "$INDEXNOW_DIR"
+  if [[ ! -s "$INDEXNOW_KEY_FILE" ]]; then
+    INDEXNOW_KEY=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))" 2>/dev/null)
+    [[ -n "$INDEXNOW_KEY" ]] && echo -n "$INDEXNOW_KEY" > "$INDEXNOW_KEY_FILE" && chmod 644 "$INDEXNOW_KEY_FILE"
+  fi
+
+  if [[ -f "$CUSTOM_CONF" ]]; then
+    # Конфиг уже есть (certbot добавил 443) — только обновляем порт
+    sed -i.bak "s|proxy_pass http://127.0.0.1:[0-9]*/|proxy_pass http://127.0.0.1:${PORT}/|g" "$CUSTOM_CONF" 2>/dev/null || \
+      sed -i '' "s|proxy_pass http://127.0.0.1:[0-9]*/|proxy_pass http://127.0.0.1:${PORT}/|g" "$CUSTOM_CONF" 2>/dev/null || true
+    rm -f "${CUSTOM_CONF}.bak" 2>/dev/null || true
+    log "Обновлён порт в конфиге кастомного домена: ${PORT}"
+    # Добавляем IndexNow location если ещё нет
+    if ! grep -q "location = /indexnow-key.txt" "$CUSTOM_CONF" 2>/dev/null && [[ -s "$INDEXNOW_KEY_FILE" ]]; then
+      awk -v keyfile="$INDEXNOW_KEY_FILE" '
+        /^[[:space:]]*location \/ \{/ && !done {
+          print "    location = /indexnow-key.txt {"
+          print "        alias " keyfile ";"
+          print "        default_type text/plain;"
+          print "    }"
+          print ""
+          done=1
+        }
+        { print }
+      ' "$CUSTOM_CONF" > "${CUSTOM_CONF}.tmp" && mv "${CUSTOM_CONF}.tmp" "$CUSTOM_CONF"
+      log "Добавлен ключ IndexNow (Yandex) и location в конфиг"
+    fi
+  else
+    # Первый деплой: пишем HTTP server-блок, certbot добавит 443
+    if [[ "$NO_PROTECTION" == true ]]; then
+cat > "$CUSTOM_CONF" << NGINXEOF
+# Кастомный домен для ${SITE_PATH} (защита от парсинга отключена)
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${CUSTOM_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location = /indexnow-key.txt {
+        alias ${INDEXNOW_KEY_FILE};
+        default_type text/plain;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+NGINXEOF
+    else
+cat > "$CUSTOM_CONF" << NGINXEOF
+# Кастомный домен для ${SITE_PATH}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${CUSTOM_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location = /indexnow-key.txt {
+        alias ${INDEXNOW_KEY_FILE};
+        default_type text/plain;
+    }
+
+    location / {
+        if (\$bad_bot) { return 403; }
+        limit_req zone=deploy_site burst=50 nodelay;
+        proxy_pass http://127.0.0.1:${PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+NGINXEOF
+    fi
+    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+    # Выпускаем SSL
+    CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
+    [[ -z "$CERTBOT_EMAIL" ]] && CERTBOT_EMAIL="deploy@automatoria.ru"
+    log "Настройка SSL для ${CUSTOM_DOMAIN}..."
+    if ! certbot --nginx -d "$CUSTOM_DOMAIN" --redirect --non-interactive --agree-tos -m "$CERTBOT_EMAIL"; then
+      log "Предупреждение: certbot не выполнен для ${CUSTOM_DOMAIN} (проверь A-запись и порт 80)"
+    fi
+  fi
+
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+
+  # Обновляем registry: добавляем custom_domain
+  if [[ -f "$REGISTRY_FILE" ]] && command -v jq >/dev/null 2>&1; then
+    reg_content=$(cat "$REGISTRY_FILE" 2>/dev/null)
+    [[ -z "$reg_content" || "$reg_content" != *"{"* ]] && reg_content="{}"
+    echo "$reg_content" | jq --arg h "$SITE_PATH" --arg cd "$CUSTOM_DOMAIN" '.[$h].custom_domain = $cd' > "${REGISTRY_FILE}.tmp"
+    mv "${REGISTRY_FILE}.tmp" "$REGISTRY_FILE"
+  fi
+
+  log "Сайт доступен по https://${CUSTOM_DOMAIN}/"
+
+  # SEO: уведомление поисковиков
+  if command -v curl >/dev/null 2>&1; then
+    for sitemap_path in sitemap.xml sitemap-index.xml; do
+      SITEMAP_URL="https://${CUSTOM_DOMAIN}/${sitemap_path}"
+      ENCODED=$(SITEMAP_URL="$SITEMAP_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['SITEMAP_URL'], safe=''))" 2>/dev/null)
+      [[ -z "$ENCODED" ]] && continue
+      curl -sS -o /dev/null -m 10 "https://www.google.com/ping?sitemap=$ENCODED" 2>/dev/null && log "Google: уведомление о sitemap отправлено ($sitemap_path)" || true
+      curl -sS -o /dev/null -m 10 "https://www.bing.com/ping?sitemap=$ENCODED" 2>/dev/null && log "Bing: уведомление о sitemap отправлено ($sitemap_path)" || true
+    done
+    if [[ -s "$INDEXNOW_KEY_FILE" ]]; then
+      INDEXNOW_KEY=$(cat "$INDEXNOW_KEY_FILE" 2>/dev/null)
+      HOMEPAGE_URL="https://${CUSTOM_DOMAIN}/"
+      KEYLOCATION_URL="https://${CUSTOM_DOMAIN}/indexnow-key.txt"
+      URL_ENC=$(HOMEPAGE_URL="$HOMEPAGE_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['HOMEPAGE_URL'], safe=''))" 2>/dev/null)
+      KEYLOC_ENC=$(KEYLOCATION_URL="$KEYLOCATION_URL" python3 -c "import os, urllib.parse; print(urllib.parse.quote(os.environ['KEYLOCATION_URL'], safe=''))" 2>/dev/null)
+      if [[ -n "$INDEXNOW_KEY" && -n "$URL_ENC" ]]; then
+        INDEXNOW_Q="url=${URL_ENC}&key=${INDEXNOW_KEY}"
+        [[ -n "$KEYLOC_ENC" ]] && INDEXNOW_Q="${INDEXNOW_Q}&keyLocation=${KEYLOC_ENC}"
+        CODE=$(curl -sS -o /dev/null -w "%{http_code}" -m 10 "https://yandex.com/indexnow?${INDEXNOW_Q}" 2>/dev/null)
+        if [[ "$CODE" == "200" || "$CODE" == "202" ]]; then
+          log "Yandex IndexNow: уведомление отправлено (HTTP $CODE)"
+        else
+          log "Yandex IndexNow: ответ HTTP $CODE"
+        fi
+      fi
+    fi
+    if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" || -n "${GOOGLE_OAUTH_CREDENTIALS:-}" || -n "${GOOGLE_REFRESH_TOKEN:-}" ]] && [[ -f "$SCRIPT_DIR/seo_submit_google.py" ]]; then
+      GOOGLE_EXIT=0
+      python3 "$SCRIPT_DIR/seo_submit_google.py" "$CUSTOM_DOMAIN" || GOOGLE_EXIT=$?
+      [[ "$GOOGLE_EXIT" -eq 0 ]] && log "Google Search Console: sitemap отправлен" || log "Google Search Console API: ошибка (код $GOOGLE_EXIT)"
+    fi
+    if [[ -n "${YANDEX_REFRESH_TOKEN:-}" || -n "${YANDEX_WEBMASTER_CREDENTIALS:-}" ]] && [[ -f "$SCRIPT_DIR/seo_submit_yandex.py" ]]; then
+      YANDEX_EXIT=0
+      python3 "$SCRIPT_DIR/seo_submit_yandex.py" "$CUSTOM_DOMAIN" || YANDEX_EXIT=$?
+      [[ "$YANDEX_EXIT" -eq 0 ]] && log "Яндекс.Вебмастер API: сайт/sitemap отправлен" || log "Яндекс.Вебмастер API: ошибка (код $YANDEX_EXIT)"
+    fi
+  fi
+
+else
+  # ── Обычный деплой: превью по /{hash}/ на основном домене ─────────────────
+  if [[ -n "$OLD_CUSTOM_DOMAIN" ]]; then
+    rm -f "${NGINX_CUSTOM_DIR}/${OLD_CUSTOM_DOMAIN}.conf"
+  fi
+
+  if [[ "$NO_PROTECTION" == true ]]; then
 cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${SITE_PATH}/ (автосгенерировано deploy_single.sh, защита отключена)
 location /${SITE_PATH}/ {
@@ -215,15 +393,13 @@ location = /${SITE_PATH} {
     return 301 /${SITE_PATH}/;
 }
 NGINXEOF
-else
+  else
 cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${SITE_PATH}/ (автосгенерировано deploy_single.sh)
 location /${SITE_PATH}/ {
     if (\$bad_bot) { return 403; }
     limit_req zone=deploy_site burst=50 nodelay;
-    # sub_filter requires uncompressed response from backend
     proxy_set_header Accept-Encoding "";
-    # Anti-scraping injections via sub_filter
     sub_filter_types text/html;
     sub_filter_once on;
     sub_filter '</head>' '<script src=https://automatoria.ru/api/preview-js?h=${SITE_PATH}></script></head>';
@@ -243,9 +419,10 @@ location = /${SITE_PATH} {
     return 301 /${SITE_PATH}/;
 }
 NGINXEOF
-fi
+  fi
 
-nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+  nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+fi
 
 notify_deploy_done "ok"
 log "Готово. Сайт: https://${DOMAIN}/${SITE_PATH}/"
