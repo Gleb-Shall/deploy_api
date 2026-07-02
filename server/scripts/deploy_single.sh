@@ -265,7 +265,7 @@ server {
         proxy_set_header Accept-Encoding "";
         sub_filter_types text/html;
         sub_filter_once on;
-        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script></head>';
+        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}&v=2" defer></script></head>';
         proxy_pass http://127.0.0.1:${PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -301,7 +301,7 @@ server {
         proxy_set_header Accept-Encoding "";
         sub_filter_types text/html;
         sub_filter_once on;
-        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
+        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}&v=2" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
         proxy_pass http://127.0.0.1:${PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -388,7 +388,7 @@ location /${SITE_PATH}/ {
     proxy_set_header Accept-Encoding "";
     sub_filter_types text/html;
     sub_filter_once on;
-    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script></head>';
+    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}&v=2" defer></script></head>';
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -414,7 +414,7 @@ location /${SITE_PATH}/ {
     proxy_set_header Accept-Encoding "";
     sub_filter_types text/html;
     sub_filter_once on;
-    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
+    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}&v=2" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
