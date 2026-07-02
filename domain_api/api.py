@@ -57,13 +57,25 @@ def init_db():
         ''')
 init_db()
 
-_ANALYTICS_JS = r"""(function(){
+_ANALYTICS_JS = """
+(function(){
   var s=document.currentScript;
-  var sid=s?s.getAttribute('data-site-id'):(new URL(s.src)).searchParams.get('site_id');
+  var sid = null;
+  if(s){
+    sid = s.getAttribute('data-site-id') || new URL(s.src).searchParams.get('site_id');
+  }else{
+    var scripts=document.getElementsByTagName('script');
+    for(var i=0;i<scripts.length;i++){
+      if(scripts[i].src && scripts[i].src.indexOf('/api/app-state.js')!==-1){
+        sid=new URL(scripts[i].src).searchParams.get('site_id');
+        break;
+      }
+    }
+  }
   if(!sid)return;
   var sess=sessionStorage.getItem('_asid');
   if(!sess){sess=Math.random().toString(36).substring(2)+Date.now().toString(36);sessionStorage.setItem('_asid',sess);}
-  var api='https://automatoria.ru/api/analytics/event';
+  var api='https://automatoria.ru/api/app-state/sync';
   
   function send(type, data) {
     var d={
@@ -138,7 +150,7 @@ def before_request():
         return None
     if request.path.startswith('/r/'):
         return None
-    if request.path in ('/api/fingerprint-key', '/api/preview-js', '/api/analytics.js', '/api/analytics/event'):
+    if request.path in ('/api/fingerprint-key', '/api/preview-js', '/api/app-state.js', '/api/app-state/sync'):
         return None
     # Domain check — accessible from whitelisted IPs (still requires API key via decorator)
     if request.path == '/api/domain/check':
@@ -633,14 +645,14 @@ def store_css_bundle():
     return jsonify({"success": True})
 
 
-@app.route('/api/analytics.js', methods=['GET'])
+@app.route("/api/app-state.js", methods=["GET"])
 def get_analytics_js():
     response = app.make_response(_ANALYTICS_JS)
     response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
     response.headers['Cache-Control'] = 'public, max-age=86400'
     return response
 
-@app.route('/api/analytics/event', methods=['POST', 'OPTIONS'])
+@app.route("/api/app-state/sync", methods=["POST", "OPTIONS"])
 def analytics_event():
     if request.method == 'OPTIONS':
         resp = app.make_default_options_response()
