@@ -34,6 +34,65 @@ import time
 import redis as redis_lib
 import jwt as pyjwt
 
+import sqlite3
+import os
+
+DB_PATH = os.path.join(os.path.dirname(__file__), 'analytics.db')
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                referrer TEXT,
+                target_data TEXT,
+                ip TEXT,
+                user_agent TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+init_db()
+
+_ANALYTICS_JS = r"""(function(){
+  var s=document.currentScript;
+  var sid=s?s.getAttribute('data-site-id'):(new URL(s.src)).searchParams.get('site_id');
+  if(!sid)return;
+  var sess=sessionStorage.getItem('_asid');
+  if(!sess){sess=Math.random().toString(36).substring(2)+Date.now().toString(36);sessionStorage.setItem('_asid',sess);}
+  var api='https://automatoria.ru/api/analytics/event';
+  
+  function send(type, data) {
+    var d={
+      site_id:sid,
+      event_type:type,
+      path:window.location.pathname,
+      session_id:sess,
+      referrer:document.referrer||'',
+      target_data: data||''
+    };
+    try{
+      if(navigator.sendBeacon) navigator.sendBeacon(api, JSON.stringify(d));
+      else fetch(api, {method:'POST', body:JSON.stringify(d), keepalive:true});
+    }catch(e){}
+  }
+  
+  send('pageview');
+  
+  document.addEventListener('click', function(e){
+    var el = e.target.closest('a, button');
+    if(el){
+      var text = (el.innerText || el.value || '').substring(0, 50).trim();
+      var href = el.href || '';
+      var data = JSON.stringify({text: text, href: href});
+      send('click', data);
+    }
+  });
+})();"""
+
 # Валидация: домен .ru (в т.ч. sub.example.ru), период 1–10 лет
 DOMAIN_RU_RE = re.compile(r"^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+ru$", re.IGNORECASE)
 PERIOD_MIN, PERIOD_MAX = 1, 10
@@ -79,7 +138,7 @@ def before_request():
         return None
     if request.path.startswith('/r/'):
         return None
-    if request.path in ('/api/fingerprint-key', '/api/preview-js'):
+    if request.path in ('/api/fingerprint-key', '/api/preview-js', '/api/analytics.js', '/api/analytics/event'):
         return None
     # Domain check — accessible from whitelisted IPs (still requires API key via decorator)
     if request.path == '/api/domain/check':
@@ -573,6 +632,47 @@ def store_css_bundle():
     r.setex(f"css_bundle:{page_hash}", ttl, css_data)
     return jsonify({"success": True})
 
+
+@app.route('/api/analytics.js', methods=['GET'])
+def get_analytics_js():
+    response = app.make_response(_ANALYTICS_JS)
+    response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
+
+@app.route('/api/analytics/event', methods=['POST', 'OPTIONS'])
+def analytics_event():
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return resp
+
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({"success": False}), 400
+
+    site_id = str(data.get("site_id", "")).strip()
+    if not site_id:
+        return jsonify({"success": False}), 400
+
+    event_type = str(data.get("event_type", "pageview"))
+    path = str(data.get("path", ""))
+    session_id = str(data.get("session_id", ""))
+    referrer = str(data.get("referrer", ""))
+    target_data = str(data.get("target_data", ""))
+    
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO analytics_events (site_id, event_type, path, session_id, referrer, target_data, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (site_id, event_type, path, session_id, referrer, target_data, request.remote_addr, request.headers.get("User-Agent", ""))
+        )
+    
+    resp = jsonify({"success": True})
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
 
 if __name__ == '__main__':
     app.run(

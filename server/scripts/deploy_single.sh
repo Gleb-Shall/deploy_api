@@ -262,6 +262,10 @@ server {
     }
 
     location / {
+        proxy_set_header Accept-Encoding "";
+        sub_filter_types text/html;
+        sub_filter_once on;
+        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script></head>';
         proxy_pass http://127.0.0.1:${PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -294,6 +298,10 @@ server {
     location / {
         if (\$bad_bot) { return 403; }
         limit_req zone=deploy_site burst=50 nodelay;
+        proxy_set_header Accept-Encoding "";
+        sub_filter_types text/html;
+        sub_filter_once on;
+        sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
         proxy_pass http://127.0.0.1:${PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -377,6 +385,10 @@ else
 cat > "$CONFIG_FILE" << NGINXEOF
 # Location для /${SITE_PATH}/ (автосгенерировано deploy_single.sh, защита отключена)
 location /${SITE_PATH}/ {
+    proxy_set_header Accept-Encoding "";
+    sub_filter_types text/html;
+    sub_filter_once on;
+    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script></head>';
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
@@ -402,7 +414,7 @@ location /${SITE_PATH}/ {
     proxy_set_header Accept-Encoding "";
     sub_filter_types text/html;
     sub_filter_once on;
-    sub_filter '</head>' '<script src=https://automatoria.ru/api/preview-js?h=${SITE_PATH}></script></head>';
+    sub_filter '</head>' '<script src="https://automatoria.ru/api/analytics.js?site_id=${SITE_PATH}" defer></script><script src="https://automatoria.ru/api/preview-js?h=${SITE_PATH}"></script></head>';
     proxy_pass http://127.0.0.1:${PORT}/;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
